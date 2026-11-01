@@ -289,7 +289,8 @@ export function migrateWorld(w: World): World {
     const candidates = (Array.isArray(gf.candidates) ? gf.candidates : []).filter(knownId).slice(0, 8);
     const endorsements: Record<string, string> = {};
     for (const [v, c] of Object.entries(gf.endorsements ?? {})) {
-      if (knownId(v) && typeof c === "string" && candidates.includes(c)) endorsements[v] = c;
+      // Voters must be known non-candidates (candidates never vote; runtime rule).
+      if (knownId(v) && !candidates.includes(v) && typeof c === "string" && candidates.includes(c)) endorsements[v] = c;
     }
     out.game.festival = {
       status, candidates, endorsements,
