@@ -16,6 +16,8 @@ const GROUP_DIST = 2.2; // bystanders this close to a meeting join in
 const MAX_GROUP = 4;
 const MAX_CHATS = Number(process.env.MIIU_MAX_CHATS ?? 3);
 const MAX_TURNS = 8; // hard cap on lines per conversation
+// User chats have no line cap; this sentinel keeps the "winding down" prompt pressure off.
+const USER_CHAT_ONGOING = 99;
 const MIN_LINES_BEFORE_LEAVING = 2; // nobody walks off before this many lines have been said
 
 interface UserChat {
@@ -191,8 +193,9 @@ export class Sim {
     chat.generating = true;
     const others = [...chat.members.filter((c) => c !== speaker), asUser(chat.userName)];
     const canLeave = chat.lines.some((l) => l.speaker === speaker.name);
-    generateLine(speaker, others, chat.pairs, chat.lines.filter((l) => l.speaker), chat.place, 99, canLeave)
+    generateLine(speaker, others, chat.pairs, chat.lines.filter((l) => l.speaker), chat.place, USER_CHAT_ONGOING, canLeave)
       .then(({ says, wants_to_leave }) => {
+        if (chat.ended) return; // chat closed while this reply was generating
         chat.lines.push({ speaker: speaker.name, text: says });
         speaker.bubble = says;
         speaker.bubbleUntil = this.now + 5000;
@@ -220,8 +223,12 @@ export class Sim {
     chat.ended = true;
     chat.replyQueue = [];
     const finish = () => {
+      const active = this.userChat && !this.userChat.ended && this.userChat !== chat ? this.userChat : null;
       for (const c of chat.allMembers) {
-        if (c.state === "talking") { c.state = "idle"; c.idleUntil = Math.max(c.idleUntil, this.now + 1500); }
+        if (c.state !== "talking") continue;
+        if (active?.allMembers.includes(c)) continue; // already chatting in a newer chat
+        c.state = "idle";
+        c.idleUntil = Math.max(c.idleUntil, this.now + 1500);
       }
     };
     const spoken = chat.lines.filter((l) => l.speaker);
