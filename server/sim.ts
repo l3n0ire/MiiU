@@ -266,8 +266,10 @@ export class Sim {
           const c = byName(b.name);
           if (!c) continue;
           const rel = getRel(this.world, c.id, USER_ID);
+          const before = rel.timeline.length ? rel.label : null;
           rel.affinity = Math.max(-100, Math.min(100, rel.affinity + b.affinity_delta));
           rel.label = b.relationship;
+          recordRelChange(rel, b.affinity_delta, `Bond with ${chat.userName} at ${chat.place}`, before);
           rel.history.push(`Bond with ${chat.userName} at ${chat.place}: ${outcome.outcomes.find((o) => o.name === c.name)?.memory ?? "a chat"}`);
           if (rel.history.length > 10) rel.history.shift();
         }
