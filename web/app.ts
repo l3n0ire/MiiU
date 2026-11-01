@@ -189,7 +189,7 @@ function showSetup(onStart: () => void) {
       <input id="miiuOllamaModel" type="text" autocomplete="off" placeholder="default: gemma4-pi" style="width:100%;margin:4px 0" />
       <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Your browser talks straight to your Ollama; nothing is sent anywhere else.
       Two one-time steps on your machine: start Ollama with <code>OLLAMA_ORIGINS=${location.origin} ollama serve</code>
-      so it accepts this site's requests, and allow the browser's "local network access" permission if it asks.
+      so it accepts this site's requests, and allow the browser's "local network access" permission if it asks. Ollama must run on this computer (localhost/127.0.0.1) - a server on another machine isn't reachable from this page.
       Fully offline alternative: run the repo locally (<code>npm start</code>).</p>
       <button type="button" id="miiuTestOllama">Test connection</button>
       <span id="miiuOllamaStatus" style="font-size:12px;margin-left:8px"></span>
