@@ -267,7 +267,10 @@ export class Sim {
     chat.generating = true;
     const others = [...chat.members.filter((c) => c !== speaker), asUser(chat.userName)];
     const canLeave = chat.lines.some((l) => l.speaker === speaker.name);
-    this.llm.generateLine(speaker, others, chat.pairs, chat.lines.filter((l) => l.speaker), chat.place, USER_CHAT_ONGOING, canLeave)
+    const activity = this.recentActivityFor(speaker);
+    const lastBond = getRel(this.world, speaker.id, USER_ID).history.at(-1);
+    if (lastBond) activity.unshift(`You last talked with ${chat.userName}: "${lastBond.slice(0, 120)}"`);
+    this.llm.generateLine(speaker, others, chat.pairs, chat.lines.filter((l) => l.speaker), chat.place, USER_CHAT_ONGOING, canLeave, activity)
       .then(({ says, wants_to_leave }) => {
         if (chat.ended) return; // chat closed while this reply was generating
         chat.lines.push({ speaker: speaker.name, text: says });
@@ -418,6 +421,31 @@ export class Sim {
     return pairs;
   }
 
+  // Recent chats involving this resident plus the latest island headline, so new
+  // conversations build on what already happened instead of restarting the same
+  // small talk every time (issue #31).
+  private recentActivityFor(speaker: Character): string[] {
+    const out: string[] = [];
+    const events = this.world.events;
+    // Priority order: island news, then this resident's most recent chats. generateLine
+    // keeps the first 4 entries, and pumpUserChat prepends the player-bond line, so the
+    // highest-priority context always survives the cap.
+    const news = [...events].reverse().find((ev) => ev.kind === "world");
+    if (news) out.push(`Island news: ${news.text.slice(0, 120)}`);
+    for (let i = events.length - 1; i >= 0 && out.length < 4; i--) {
+      const ev = events[i];
+      if (ev.kind !== "chat" || !ev.participants.includes(speaker.id)) continue;
+      const others = ev.participants
+        .filter((id) => id !== speaker.id)
+        .map((id) => this.byId(id)?.name)
+        .filter((n): n is string => Boolean(n))
+        .join(" & ");
+      const first = ev.lines?.find((l) => l.speaker)?.text.slice(0, 100);
+      out.push(`You chatted with ${others || "someone"}${ev.place ? ` at ${ev.place}` : ""}${first ? `: "${first}"` : ""}`);
+    }
+    return out;
+  }
+
   private startChat(members: Character[]) {
     const chat: ActiveChat = {
       members,
@@ -455,7 +483,7 @@ export class Sim {
 
     const speaker = this.pickSpeaker(chat);
     chat.generating = true;
-    this.llm.generateLine(speaker, chat.present.filter((c) => c !== speaker), chat.pairs, chat.lines, chat.place, MAX_TURNS - chat.lines.length, chat.lines.length >= MIN_LINES_BEFORE_LEAVING)
+    this.llm.generateLine(speaker, chat.present.filter((c) => c !== speaker), chat.pairs, chat.lines, chat.place, MAX_TURNS - chat.lines.length, chat.lines.length >= MIN_LINES_BEFORE_LEAVING, this.recentActivityFor(speaker))
       .then(({ says, wants_to_leave }) => {
         chat.lines.push({ speaker: speaker.name, text: says });
         chat.lastSpeaker = speaker;
