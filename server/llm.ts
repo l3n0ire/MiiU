@@ -235,8 +235,8 @@ ${speaker.facts.length ? speaker.facts.map((f) => `  - ${f}`).join("\n") : "  (n
 You are at ${place}, talking with:
 ${feelings}
 
-Recent island activity - already covered, so build on it or open a fresh angle instead of restarting it:
-${recentActivity.slice(-4).length ? recentActivity.slice(-4).map((a) => `  - ${a}`).join("\n") : "  (nothing yet)"}
+Recent island activity (most relevant first) - already covered, so build on it or open a fresh angle instead of restarting it:
+${recentActivity.slice(0, 4).length ? recentActivity.slice(0, 4).map((a) => `  - ${a}`).join("\n") : "  (nothing yet)"}
 
 Conversation so far:
 ${lines.length ? transcript(lines) : "(nobody has spoken yet — you start the conversation)"}
