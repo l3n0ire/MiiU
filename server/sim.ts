@@ -1,5 +1,5 @@
 import {
-  asUser, generateLine, generateReactions, summarizeConversation,
+  asUser, generateEvent, generateLine, generateReactions, summarizeConversation,
   type Line, type Outcome, type PairInfo,
 } from "./llm.ts";
 import {
@@ -18,6 +18,13 @@ const MAX_CHATS = Number(process.env.MIIU_MAX_CHATS ?? 3);
 const MAX_TURNS = 8; // hard cap on lines per conversation
 // User chats have no line cap; this sentinel keeps the "winding down" prompt pressure off.
 const USER_CHAT_ONGOING = 99;
+
+// Spontaneous world events generated from recent conversation history (issue #2).
+const AUTO_EVENTS = process.env.MIIU_AUTO_EVENTS !== "off";
+const AUTO_MIN = Math.max(1, Number(process.env.MIIU_AUTO_EVENT_MIN ?? 2)); // chats between events, lower bound
+const AUTO_MAX = Math.max(AUTO_MIN, Number(process.env.MIIU_AUTO_EVENT_MAX ?? 5)); // upper bound
+const AUTO_COOLDOWN = Number(process.env.MIIU_AUTO_EVENT_COOLDOWN ?? 120_000); // sim-ms between auto events
+const rollNextAuto = () => AUTO_MIN + Math.floor(Math.random() * (AUTO_MAX - AUTO_MIN + 1));
 const MIN_LINES_BEFORE_LEAVING = 2; // nobody walks off before this many lines have been said
 
 interface UserChat {
@@ -55,6 +62,10 @@ export class Sim {
   private userChat: UserChat | null = null;
   private forced = new Set<string>();
   private eventBusy = false;
+  private chatsSinceEvent = 0;
+  private nextAutoEvent = rollNextAuto();
+  private lastAutoEvent = -AUTO_COOLDOWN;
+  private recentChats: { place: string; lines: Line[] }[] = [];
 
   constructor(
     public world: World,
@@ -429,8 +440,29 @@ export class Sim {
       lines: chat.lines,
       text: `${listNames(members)} → ${changes.join(", ") || "no change"}`,
     });
+    this.recentChats.push({ place: chat.place, lines: chat.lines.slice(-8) });
+    if (this.recentChats.length > 3) this.recentChats.shift();
     this.endChat(chat);
     saveWorld(this.world);
+    this.maybeAutoEvent();
+  }
+
+  // Roll for a spontaneous event after a random number of completed chats (issue #2).
+  private maybeAutoEvent() {
+    if (!AUTO_EVENTS) return;
+    this.chatsSinceEvent += 1;
+    if (this.chatsSinceEvent < this.nextAutoEvent) return;
+    if (this.eventBusy || this.now - this.lastAutoEvent < AUTO_COOLDOWN) return;
+    this.chatsSinceEvent = 0;
+    this.nextAutoEvent = rollNextAuto();
+    this.lastAutoEvent = this.now;
+    generateEvent(this.recentChats, this.world.characters, LANDMARKS.map((l) => l.name))
+      .then((ev) => {
+        const target = this.world.characters.find((c) => c.name === ev.target);
+        this.log({ kind: "system", participants: [], text: `🎲 The island stirs...` });
+        void this.triggerEvent(ev.headline, target?.id ?? null, ev.gather === "nowhere" ? null : ev.gather);
+      })
+      .catch((err) => console.error("LLM error (auto event):", err));
   }
 
   private failChat(chat: ActiveChat, err: Error) {

@@ -228,6 +228,52 @@ For EACH resident (${names.join(", ")}) give:
 
 const SYSTEM = "You are the narrator of a cozy life-simulation game. Reply only with JSON matching the schema.";
 
+export interface IslandEvent { headline: string; target: string; gather: string }
+
+// Invent a spontaneous island event that riffs on recent conversations.
+// target is a resident name or "everyone"; gather is a landmark name or "nowhere".
+export async function generateEvent(
+  recentChats: { place: string; lines: Line[] }[],
+  chars: Character[],
+  landmarks: string[],
+): Promise<IslandEvent> {
+  const names = chars.map((c) => c.name);
+  const schema = {
+    type: "object",
+    properties: {
+      headline: { type: "string" },
+      target: { type: "string", enum: [...names, "everyone"] },
+      gather: { type: "string", enum: [...landmarks, "nowhere"] },
+    },
+    required: ["headline", "target", "gather"],
+  };
+  const history = recentChats
+    .map((ch) => `At ${ch.place}:\n${ch.lines.slice(-8).map((l) => `${l.speaker}: ${l.text}`).join("\n")}`)
+    .join("\n\n");
+  const residents = chars
+    .map((c) => `- ${c.name} (${c.mood})${c.memories.length ? `: last memory "${c.memories[c.memories.length - 1]}"` : ""}`)
+    .join("\n");
+  const prompt = `On a tiny island, these conversations just happened:
+
+${history}
+
+Residents right now:
+${residents}
+
+Invent ONE surprising, chaotic island event that riffs on what the residents have actually been talking about or feeling. It must connect to the conversations above, not be random noise.
+
+Decide:
+- headline: one short punchy news headline for the event (max 12 words, no names needed unless it helps)
+- target: who it primarily happens to - one resident name, or "everyone"
+- gather: a landmark where residents gather for it, or "nowhere"`;
+  const ev = await callJson<IslandEvent>(prompt, schema);
+  return {
+    headline: String(ev.headline ?? "").slice(0, 120),
+    target: names.includes(ev.target) ? ev.target : "everyone",
+    gather: landmarks.includes(ev.gather) ? ev.gather : "nowhere",
+  };
+}
+
 async function callJson<T>(prompt: string, schema: object): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     const content = PROVIDER === "openai" ? await callOpenAI(prompt, schema) : await callOllama(prompt, schema);
