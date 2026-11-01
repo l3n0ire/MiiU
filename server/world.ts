@@ -1,5 +1,3 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-
 export const MAP_W = 20;
 export const MAP_H = 15;
 
@@ -86,6 +84,11 @@ export interface World {
   events: WorldEvent[];
 }
 
+// Persistence hook: the Node server saves to world.json, the browser app to localStorage.
+export interface WorldStore {
+  save(world: World): void;
+}
+
 export const relKey = (a: string, b: string) => [a, b].sort().join("|");
 
 export function getRel(world: World, a: string, b: string): Relationship {
@@ -145,20 +148,17 @@ const SEED = [
   { name: "Gus", personality: "Competitive gym bro with a heart of gold, terrible at flirting", likes: "protein shakes, frisbee", dislikes: "losing", color: "#3fb57a" },
 ];
 
-const FILE = new URL("../world.json", import.meta.url);
-
-export function loadWorld(): World {
-  if (existsSync(FILE)) {
-    const w = JSON.parse(readFileSync(FILE, "utf8")) as World;
-    for (const r of Object.values(w.relationships)) { r.lastTalk = 0; r.timeline ??= []; } // sim clock restarts at 0; backfill pre-timeline saves
-    for (const c of w.characters) { c.state = "wandering"; c.bubble = null; c.idleUntil = 0; c.occupation ??= randomOccupation(); } // backfill jobs for pre-#6 saves
-    return w;
-  }
-  const w: World = { characters: SEED.map(newCharacter), relationships: {}, events: [] };
-  saveWorld(w);
-  return w;
+// A fresh island with the default residents.
+export function seedWorld(): World {
+  return { characters: SEED.map(newCharacter), relationships: {}, events: [] };
 }
 
-export function saveWorld(world: World) {
-  writeFileSync(FILE, JSON.stringify(world, null, 2));
+// Normalize a loaded/deserialized world for a fresh sim session: the sim clock
+// restarts at 0, and older saves may predate the timeline or occupation fields.
+export function migrateWorld(w: World): World {
+  w.events ??= [];
+  w.relationships ??= {};
+  for (const r of Object.values(w.relationships)) { r.lastTalk = 0; r.timeline ??= []; }
+  for (const c of w.characters) { c.state = "wandering"; c.bubble = null; c.idleUntil = 0; c.occupation ??= randomOccupation(); }
+  return w;
 }

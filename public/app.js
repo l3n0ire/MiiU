@@ -16,7 +16,9 @@ const nameOf = (id) => (id === "__user__" ? "You" : state.characters.find((c) =>
 const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
 
 function connect() {
-  ws = new WebSocket(`ws://${location.host}`);
+  // Static build (issue #19): the island runs in this tab; web/app.ts installs the connector.
+  if (window.MIIU_STATIC && !window.MIIU_CONNECT) { setTimeout(connect, 100); return; }
+  ws = window.MIIU_CONNECT ? window.MIIU_CONNECT() : new WebSocket(`ws://${location.host}`);
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.type === "init") {

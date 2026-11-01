@@ -8,5 +8,8 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
-  "include": ["server"]
+  "include": [
+    "server",
+    "web"
+  ]
 }

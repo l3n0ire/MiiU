@@ -3,9 +3,29 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
-import { MODEL } from "./llm.ts";
+import { createLLM } from "./llm.ts";
+import { configFromEnv } from "./llm-env.ts";
 import { Sim } from "./sim.ts";
-import { LANDMARKS, MAP_H, MAP_W, loadWorld, newCharacter, saveWorld } from "./world.ts";
+import { loadWorld, nodeStore } from "./storage-node.ts";
+import { LANDMARKS, MAP_H, MAP_W, newCharacter } from "./world.ts";
+
+const llm = createLLM(configFromEnv());
+const MODEL = llm.model;
+
+// Server-mode tunables come from MIIU_* env vars; the browser build passes its own config.
+const simConfig = {
+  maxChats: process.env.MIIU_MAX_CHATS === undefined ? undefined : Number(process.env.MIIU_MAX_CHATS),
+  autoEvents: process.env.MIIU_AUTO_EVENTS !== "off",
+  autoEventMin: process.env.MIIU_AUTO_EVENT_MIN === undefined ? undefined : Number(process.env.MIIU_AUTO_EVENT_MIN),
+  autoEventMax: process.env.MIIU_AUTO_EVENT_MAX === undefined ? undefined : Number(process.env.MIIU_AUTO_EVENT_MAX),
+  autoEventCooldown: process.env.MIIU_AUTO_EVENT_COOLDOWN === undefined ? undefined : Number(process.env.MIIU_AUTO_EVENT_COOLDOWN),
+  maxPopulation: process.env.MIIU_MAX_POPULATION === undefined ? undefined : Number(process.env.MIIU_MAX_POPULATION),
+  spawning: process.env.MIIU_SPAWNING !== "off",
+  spawnAffinity: process.env.MIIU_SPAWN_AFFINITY === undefined ? undefined : Number(process.env.MIIU_SPAWN_AFFINITY),
+  spawnChance: process.env.MIIU_SPAWN_CHANCE === undefined ? undefined : Number(process.env.MIIU_SPAWN_CHANCE),
+  playerSpawning: process.env.MIIU_PLAYER_SPAWNING !== "off",
+  socialWander: process.env.MIIU_SOCIAL_WANDER !== "off",
+};
 
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC = fileURLToPath(new URL("../public", import.meta.url));
@@ -26,7 +46,7 @@ const wss = new WebSocketServer({ server });
 const send = (ws: WebSocket, msg: unknown) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
 const broadcast = (msg: unknown) => wss.clients.forEach((ws) => send(ws, msg));
 
-const sim = new Sim(loadWorld(), (event) => broadcast({ type: "event", event }));
+const sim = new Sim(loadWorld(), (event) => broadcast({ type: "event", event }), { llm, store: nodeStore, config: simConfig });
 
 wss.on("connection", (ws) => {
   send(ws, { type: "init", map: { w: MAP_W, h: MAP_H, landmarks: LANDMARKS }, events: sim.world.events, model: MODEL });
@@ -66,6 +86,6 @@ wss.on("connection", (ws) => {
 });
 
 setInterval(() => broadcast({ type: "state", ...sim.snapshot() }), 200);
-process.on("SIGINT", () => { saveWorld(sim.world); process.exit(0); });
+process.on("SIGINT", () => { nodeStore.save(sim.world); process.exit(0); });
 
 server.listen(PORT, () => console.log(`MiiU running at http://localhost:${PORT} (model: ${MODEL})`));
