@@ -380,7 +380,7 @@ For EACH resident (${names.join(", ")}) give:
       .join("\n\n");
     // Island news is public: never prompt it with ledger-private memories (tell
     // records and private-chat summaries stay out of the event generator too).
-    const pubMem = (c: Character) => c.memories.filter((m) => !m.startsWith("(private)") && !m.startsWith("(secret)"));
+    const pubMem = (c: Character) => c.memories.filter((m) => !m.startsWith("(private)") && !m.startsWith("(secret)") && !m.startsWith("(exposed)"));
     const residents = chars
       .map((c) => {
         const mem = pubMem(c);
