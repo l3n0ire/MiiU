@@ -3,7 +3,7 @@ import {
   type Line, type Outcome, type PairInfo,
 } from "./llm.ts";
 import {
-  LANDMARKS, getRel, newCharacter, placeName, randomWalkable, relKey, saveWorld,
+  LANDMARKS, getRel, newCharacter, placeName, randomWalkable, relKey, saveWorld, workplaceFor,
   type Character, type World, type WorldEvent,
 } from "./world.ts";
 
@@ -296,7 +296,13 @@ export class Sim {
       if (c.state === "talking") continue;
       if (c.bubble && c.bubbleUntil && this.now >= c.bubbleUntil) c.bubble = null;
       if (c.state === "idle") {
-        if (this.now >= c.idleUntil) { c.state = "wandering"; c.target = randomWalkable(); }
+        if (this.now >= c.idleUntil) {
+          c.state = "wandering";
+          const wp = workplaceFor(c.occupation);
+          c.target = wp && Math.random() < 0.5 // residents drift toward work half the time
+            ? { x: wp.x + Math.random() * wp.w, y: wp.y + Math.random() * wp.h }
+            : randomWalkable();
+        }
         continue;
       }
       const dx = c.target.x - c.pos.x, dy = c.target.y - c.pos.y;
