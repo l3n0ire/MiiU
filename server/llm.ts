@@ -20,6 +20,7 @@ export function asUser(name = "You"): Character {
   return {
     id: USER_ID, name,
     personality: "The human player visiting the island",
+    occupation: "Visitor",
     likes: "", dislikes: "", color: "#888888",
     pos: { x: 0, y: 0 }, target: { x: 0, y: 0 },
     state: "idle", idleUntil: 0, mood: "neutral", memories: [], bubble: null,
@@ -38,6 +39,7 @@ export interface PairInfo { a: Character; b: Character; rel: Relationship }
 function describe(c: Character) {
   const mem = c.memories.length ? c.memories.slice(-5).map((m) => `  - ${m}`).join("\n") : "  (none yet)";
   return `${c.name}
+  Occupation: ${c.occupation}
   Personality: ${c.personality}
   Likes: ${c.likes || "?"} | Dislikes: ${c.dislikes || "?"}
   Current mood: ${c.mood}

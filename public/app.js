@@ -246,6 +246,7 @@ function renderDetail() {
   const others = state.characters.filter((o) => o.id !== c.id);
   const html = `<h2>Resident</h2>
     <div class="row" style="justify-content:space-between"><b style="font-size:16px;color:${c.color}">${esc(c.name)}</b><span class="chip">${c.mood}</span></div>
+    <div class="meta">💼 ${esc(c.occupation || "—")}</div>
     <p style="margin:6px 0">${esc(c.personality)}</p>
     <div class="meta">❤ ${esc(c.likes || "—")} · ✖ ${esc(c.dislikes || "—")}</div>
     <h2 style="margin-top:10px">Feelings</h2>

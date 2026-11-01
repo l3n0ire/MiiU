@@ -30,6 +30,7 @@ export interface Character {
   state: "wandering" | "talking" | "idle";
   idleUntil: number;
   mood: Mood;
+  occupation: string; // job role (issue #6); workplace biases wandering
   memories: string[];
   bubble: string | null;
   bubbleUntil?: number;
@@ -90,10 +91,11 @@ export function randomWalkable(): Vec {
   return { x: 1.5 + Math.random() * (MAP_W - 3), y: 1.5 + Math.random() * (MAP_H - 3) };
 }
 
-export function newCharacter(input: Pick<Character, "name" | "personality" | "likes" | "dislikes" | "color">): Character {
+export function newCharacter(input: Pick<Character, "name" | "personality" | "likes" | "dislikes" | "color"> & { occupation?: string }): Character {
   const pos = randomWalkable();
   return {
     id: Math.random().toString(36).slice(2, 10),
+    occupation: randomOccupation(),
     ...input,
     pos,
     target: randomWalkable(),
@@ -104,6 +106,20 @@ export function newCharacter(input: Pick<Character, "name" | "personality" | "li
     bubble: null,
   };
 }
+
+// Occupation roles (issue #6): each resident has a job; landmark-bound jobs
+// pull their wandering toward the workplace.
+export const OCCUPATIONS: { job: string; place: string | null }[] = [
+  { job: "Barista", place: "Café" },
+  { job: "Groundskeeper", place: "Park" },
+  { job: "Lifeguard", place: "Beach" },
+  { job: "Superintendent", place: "Apartments" },
+];
+export const randomOccupation = () => OCCUPATIONS[Math.floor(Math.random() * OCCUPATIONS.length)].job;
+export const workplaceFor = (occupation: string): Landmark | undefined => {
+  const place = OCCUPATIONS.find((o) => o.job === occupation)?.place;
+  return place ? LANDMARKS.find((l) => l.name === place) : undefined;
+};
 
 const SEED = [
   { name: "Pip", personality: "Hyper, optimistic, talks in exclamation marks, wants to be a famous chef", likes: "spicy food, karaoke", dislikes: "mornings", color: "#ff7a59" },
@@ -118,7 +134,7 @@ export function loadWorld(): World {
   if (existsSync(FILE)) {
     const w = JSON.parse(readFileSync(FILE, "utf8")) as World;
     for (const r of Object.values(w.relationships)) r.lastTalk = 0; // sim clock restarts at 0
-    for (const c of w.characters) { c.state = "wandering"; c.bubble = null; c.idleUntil = 0; }
+    for (const c of w.characters) { c.state = "wandering"; c.bubble = null; c.idleUntil = 0; c.occupation ??= randomOccupation(); } // backfill jobs for pre-#6 saves
     return w;
   }
   const w: World = { characters: SEED.map(newCharacter), relationships: {}, events: [] };
