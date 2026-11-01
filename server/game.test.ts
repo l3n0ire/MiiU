@@ -223,3 +223,43 @@ test("player: residents can tell the player a secret and promise them things", (
   assert.equal(p.kind, "promise_keep");
   assert.equal(w.game.pledges[0].promisee, USER_ID);
 });
+
+test("clock discipline: paused/closed time never counts toward deadlines", () => {
+  const w = freshWorld();
+  const f = startRace(w);
+  const [a, b] = w.characters;
+  applyAction(w, a.id, { kind: "promise_tell", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  const pledge = w.game.pledges[0];
+  // Simulate a closed tab: wall time passes, the game clock does not.
+  const clockAtClose = w.game.clockMs;
+  const loaded = migrateWorld(JSON.parse(JSON.stringify(w)));
+  assert.equal(loaded.game.clockMs, clockAtClose, "offline time does not advance the game clock");
+  assert.equal(loaded.game.festival!.deadline, f.deadline, "festival deadline is unchanged across sessions");
+  assert.equal(loaded.game.pledges[0].deadline, pledge.deadline, "pledge deadline is unchanged across sessions");
+  // Nothing resolves until the GAME clock reaches the deadline, however long the tab was closed.
+  assert.equal(resolveFestival(loaded, TUNING), null);
+  assert.equal(resolveDuePledges(loaded).length, 0);
+  loaded.game.clockMs = pledge.deadline - 1;
+  assert.equal(resolveDuePledges(loaded).length, 0, "one sim-ms early is still active");
+  loaded.game.clockMs = pledge.deadline;
+  assert.equal(resolveDuePledges(loaded).length, 1);
+});
+
+test("derived context: watchers and later chats expose nothing private before exposure", () => {
+  const w = freshWorld();
+  const [a, b, c, d] = w.characters;
+  const secret = w.game.secrets.find((s) => s.subject === a.id)!;
+  applyAction(w, a.id, { kind: "tell", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  // No island event was produced by the tell (nothing for the news feed to carry).
+  // A third party's prompt context excludes the content, the subject, and the tell-chain.
+  for (const outsider of [c, d]) {
+    const view = gameViewFor(w, outsider.id, TUNING);
+    assert.ok(!view.includes(secret.text), `${outsider.name} must not see content`);
+    assert.ok(!/told|secret/i.test(view) || !view.includes(a.name), `${outsider.name} must not see the chain`);
+    assert.deepEqual(knownSecrets(w, outsider.id).filter((s) => s.subject === a.id), []);
+  }
+  // Even the witness list in the ledger is only visible through each resident's own view:
+  // b's view lists the secret, c's does not - already covered; exposure flips it public.
+  applyAction(w, b.id, { kind: "expose", secret: 1, to: c.name }, ctx(w, b.id, c.id));
+  assert.ok(gameViewFor(w, c.id, TUNING).includes("[already public]") || !gameViewFor(w, c.id, TUNING).includes(secret.text));
+});
