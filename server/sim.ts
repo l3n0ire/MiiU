@@ -16,6 +16,7 @@ const GROUP_DIST = 2.2; // bystanders this close to a meeting join in
 const MAX_GROUP = 4;
 const MAX_CHATS = Number(process.env.MIIU_MAX_CHATS ?? 3);
 const MAX_TURNS = 8; // hard cap on lines per conversation
+const MIN_LINES_BEFORE_LEAVING = 2; // nobody walks off before this many lines have been said
 
 interface ActiveChat {
   members: Character[];
@@ -212,11 +213,11 @@ export class Sim {
 
     const speaker = this.pickSpeaker(chat);
     chat.generating = true;
-    generateLine(speaker, chat.present.filter((c) => c !== speaker), chat.pairs, chat.lines, chat.place, MAX_TURNS - chat.lines.length)
+    generateLine(speaker, chat.present.filter((c) => c !== speaker), chat.pairs, chat.lines, chat.place, MAX_TURNS - chat.lines.length, chat.lines.length >= MIN_LINES_BEFORE_LEAVING)
       .then(({ says, wants_to_leave }) => {
         chat.lines.push({ speaker: speaker.name, text: says });
         chat.lastSpeaker = speaker;
-        if (wants_to_leave) chat.present = chat.present.filter((c) => c !== speaker);
+        if (wants_to_leave && chat.lines.length > MIN_LINES_BEFORE_LEAVING) chat.present = chat.present.filter((c) => c !== speaker);
         if (chat.lines.length >= MAX_TURNS || chat.present.length < 2) chat.finished = true;
       })
       .catch((err) => {

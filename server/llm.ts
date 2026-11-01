@@ -1,7 +1,15 @@
 import { MOODS, REL_LABELS, type Character, type Mood, type Relationship, type RelLabel } from "./world.ts";
 
+// MIIU_PROVIDER=ollama (default, local) or openai (needs OPENAI_API_KEY).
+const PROVIDER = process.env.MIIU_PROVIDER === "openai" ? "openai" : "ollama";
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
-export const MODEL = process.env.MIIU_MODEL ?? "gemma4-pi";
+const OPENAI_URL = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+const OPENAI_REASONING = process.env.MIIU_OPENAI_REASONING; // e.g. "minimal"/"low" for faster gpt-5 replies
+export const MODEL = process.env.MIIU_MODEL ?? (PROVIDER === "openai" ? "gpt-5-mini" : "gemma4-pi");
+
+if (PROVIDER === "openai" && !process.env.OPENAI_API_KEY) {
+  throw new Error("MIIU_PROVIDER=openai but OPENAI_API_KEY is not set (put it in .env)");
+}
 
 export type Line = { speaker: string; text: string };
 
@@ -93,6 +101,7 @@ export async function generateLine(
   lines: Line[],
   place: string,
   turnsLeft: number,
+  canLeave: boolean,
 ): Promise<{ says: string; wants_to_leave: boolean }> {
   const otherNames = others.map((o) => o.name);
   const older = speaker.memories.slice(0, -5).filter((m) => otherNames.some((n) => m.includes(n)));
@@ -124,7 +133,11 @@ ${lines.length ? transcript(lines) : "(nobody has spoken yet — you start the c
 
 Write ONLY your next line as ${speaker.name} (max ~20 words). React to what was just said.
 Do not repeat or paraphrase earlier lines. Do not write lines for anyone else.
-${turnsLeft <= 2 ? "The conversation is winding down; wrap up naturally.\n" : ""}Set wants_to_leave to true if ${speaker.name} would end the conversation or walk away now.`;
+${turnsLeft <= 2 ? "The conversation is winding down; wrap up naturally.\n" : ""}${
+    canLeave
+      ? `Set wants_to_leave to true if ${speaker.name} would end the conversation or walk away now.`
+      : "The conversation just started: don't say goodbye yet, and set wants_to_leave to false."
+  }`;
 
   const schema = {
     type: "object",
@@ -199,29 +212,78 @@ For EACH resident (${names.join(", ")}) give:
     .map((r) => ({ ...r, mood: MOODS.includes(r.mood) ? r.mood : "neutral" }));
 }
 
+const SYSTEM = "You are the narrator of a cozy life-simulation game. Reply only with JSON matching the schema.";
+
 async function callJson<T>(prompt: string, schema: object): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: "POST",
-      body: JSON.stringify({
-        model: MODEL,
-        stream: false,
-        think: false,
-        format: schema,
-        options: { temperature: 0.9 },
-        messages: [
-          { role: "system", content: "You are the narrator of a cozy life-simulation game. Reply only with JSON matching the schema." },
-          { role: "user", content: prompt },
-        ],
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
-    if (!res.ok) throw new Error(`Ollama ${res.status}: ${await res.text()}`);
-    const body = (await res.json()) as { message: { content: string } };
+    const content = PROVIDER === "openai" ? await callOpenAI(prompt, schema) : await callOllama(prompt, schema);
     try {
-      return JSON.parse(body.message.content) as T;
+      return JSON.parse(content) as T;
     } catch (e) {
       if (attempt === 1) throw e;
     }
   }
+}
+
+async function callOllama(prompt: string, schema: object): Promise<string> {
+  const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: "POST",
+    body: JSON.stringify({
+      model: MODEL,
+      stream: false,
+      think: false,
+      format: schema,
+      options: { temperature: 0.9 },
+      messages: [
+        { role: "system", content: SYSTEM },
+        { role: "user", content: prompt },
+      ],
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) throw new Error(`Ollama ${res.status}: ${await res.text()}`);
+  const body = (await res.json()) as { message: { content: string } };
+  return body.message.content;
+}
+
+async function callOpenAI(prompt: string, schema: object): Promise<string> {
+  const res = await fetch(`${OPENAI_URL}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: JSON.stringify({
+      model: MODEL,
+      ...(OPENAI_REASONING && { reasoning_effort: OPENAI_REASONING }),
+      response_format: { type: "json_schema", json_schema: { name: "reply", strict: true, schema: toStrictSchema(schema) } },
+      messages: [
+        { role: "system", content: SYSTEM },
+        { role: "user", content: prompt },
+      ],
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenAI ${res.status}: ${err.slice(0, 300)}`);
+  }
+  const body = (await res.json()) as { choices: { message: { content: string | null; refusal?: string } }[] };
+  const msg = body.choices[0]?.message;
+  if (!msg?.content) throw new Error(`OpenAI returned no content${msg?.refusal ? `: ${msg.refusal}` : ""}`);
+  return msg.content;
+}
+
+// OpenAI strict mode needs additionalProperties:false and every property required on each object,
+// and rejects some numeric/array bounds. Our clean* helpers re-apply those bounds after parsing.
+function toStrictSchema(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(toStrictSchema);
+  if (!node || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (["minItems", "maxItems", "minimum", "maximum"].includes(k)) continue;
+    out[k] = k === "enum" ? v : toStrictSchema(v);
+  }
+  if (out.type === "object" && out.properties) {
+    out.additionalProperties = false;
+    out.required = Object.keys(out.properties as object);
+  }
+  return out;
 }

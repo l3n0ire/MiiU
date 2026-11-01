@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx server/index.ts",
-    "dev": "tsx watch server/index.ts"
+    "start": "tsx --env-file-if-exists=.env server/index.ts",
+    "dev": "tsx watch --env-file-if-exists=.env server/index.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"
