@@ -100,6 +100,9 @@ interface ActiveChat {
   generating: boolean;
   finished: boolean; // no more lines will be generated
   outcome: Outcome | null;
+  // A ledger-private game move (tell) happened in this chat: its derived
+  // memories/history/transcript are provenance-tagged private for the broadcast.
+  privateGame?: boolean;
 }
 
 // Never persist or print provider error bodies verbatim: they can echo a rejected
@@ -137,7 +140,10 @@ export class Sim {
     this.nextAutoEvent = this.rollNextAuto();
     this.gameTuning = { campaignMs: this.cfg.gameCampaignMs, cooldownMs: this.cfg.gameCooldownMs, tellWindowMs: this.cfg.gameTellWindowMs };
     if (this.cfg.game) ensureSecrets(this.world); // every resident starts with one secret only they know
-    setInterval(() => this.tick(), TICK_MS);
+    // unref where available (Node) so tests can construct a Sim without holding
+    // the event loop open; browsers ignore it.
+    const timer = setInterval(() => this.tick(), TICK_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
   }
 
   private persist() {
@@ -400,6 +406,7 @@ export class Sim {
     const applied = applyAction(this.world, speaker.id, action, { present, tuning: this.gameTuning });
     if (applied.event) this.log({ kind: "world", participants: [], text: applied.event });
     if (applied.kind !== "none") this.persist();
+    return applied.kind;
   }
 
   // Pick the next wander target: a few random candidates, scored by who would be nearby.
@@ -526,7 +533,7 @@ export class Sim {
       .then(({ says, wants_to_leave, action }) => {
         chat.lines.push({ speaker: speaker.name, text: says });
         chat.lastSpeaker = speaker;
-        if (this.cfg.game) this.runAction(speaker, action, chat.present.map((c) => ({ id: c.id, name: c.name })));
+        if (this.cfg.game && this.runAction(speaker, action, chat.present.map((c) => ({ id: c.id, name: c.name }))) === "tell") chat.privateGame = true;
         if (wants_to_leave && chat.lines.length > MIN_LINES_BEFORE_LEAVING) chat.present = chat.present.filter((c) => c !== speaker);
         if (chat.lines.length >= MAX_TURNS || chat.present.length < 2) chat.finished = true;
       })
@@ -562,14 +569,15 @@ export class Sim {
 
   private finishChat(chat: ActiveChat, outcome: Outcome) {
     const { members } = chat;
-    const changes = applyChatOutcome(this.world, members, outcome, { place: chat.place });
+    const changes = applyChatOutcome(this.world, members, outcome, { place: chat.place, privateGame: chat.privateGame });
     for (const p of chat.pairs) p.rel.lastTalk = this.now;
 
     this.log({
       kind: "chat",
       participants: members.map((c) => c.id),
       place: chat.place,
-      lines: chat.lines,
+      // Private-game chats keep their transcript off the observer channel entirely.
+      ...(chat.privateGame ? {} : { lines: chat.lines }),
       text: `${listNames(members)} → ${changes.join(", ") || "no change"}`,
     });
     this.recentChats.push({ place: chat.place, lines: chat.lines.slice(-8) });
@@ -679,8 +687,20 @@ export class Sim {
     // every broadcast, so the countdown freezes while paused and re-syncs after resume.
     const est = (gameMs: number) => Date.now() + Math.max(0, gameMs - g.clockMs) / this.speed;
     const f = g.festival;
+    // Observer-channel redaction: the broadcast is the observer UI channel, not a
+    // persistence path (saves/exports serialize the full world). Ledger-derived
+    // private entries - tell records "(secret)", exposure tell-chains "(exposed)" -
+    // and any text of a still-unexposed secret never leave the sim; durable facts
+    // are prompt substrate and are not part of the UI contract at all.
+    const unexposedTexts = g.secrets.filter((s) => !s.exposed).map((s) => s.text).filter((t) => t.length >= 8);
+    const scrub = (m: string) =>
+      !m.startsWith("(secret)") && !m.startsWith("(exposed)") && !m.startsWith("(private)") &&
+      !unexposedTexts.some((t) => m.includes(t));
     return {
-      characters: this.world.characters,
+      characters: this.world.characters.map((c) => {
+        const { facts: _facts, memories, ...pub } = c;
+        return { ...pub, memories: memories.filter(scrub) };
+      }),
       festival: this.cfg.game && f
         ? {
             status: f.status,
@@ -691,7 +711,10 @@ export class Sim {
             nextAt: f.nextAt === null ? null : est(f.nextAt),
           }
         : null,
-      relationships: Object.values(this.world.relationships),
+      relationships: Object.values(this.world.relationships).map((r) => ({
+        ...r,
+        history: r.history.filter((h) => !h.startsWith("(private)")),
+      })),
       paused: this.paused,
       speed: this.speed,
       status: this.status(),
@@ -719,8 +742,11 @@ export function applyChatOutcome(
   world: World,
   members: Character[],
   outcome: Outcome,
-  opts: { place: string; userName?: string },
+  opts: { place: string; userName?: string; privateGame?: boolean },
 ): string[] {
+  // Provenance tag for writes derived from a chat with a ledger-private game move:
+  // they stay in the world for prompts/saves but are filtered from the broadcast.
+  const PVT = opts.privateGame ? "(private) " : "";
   const { place, userName } = opts;
   const groupNote = members.length > 2 ? " (group chat)" : "";
   const byName = (n: string) => members.find((c) => c.name === n);
@@ -753,7 +779,7 @@ export function applyChatOutcome(
       rel.history.push(`${cause}: ${memory || "a chat"}`);
       if (rel.history.length > 10) rel.history.shift();
     } else if (memory) {
-      rel.history.push(`At ${place}${groupNote}: ${memory}`);
+      rel.history.push(`${PVT}At ${place}${groupNote}: ${memory}`);
       if (rel.history.length > 10) rel.history.shift();
     }
     changes.push(`${a.name}–${b.name}: ${rel.label} (${p.affinity_delta >= 0 ? "+" : ""}${p.affinity_delta})`);
@@ -765,7 +791,7 @@ export function applyChatOutcome(
     c.mood = o.mood;
     const text = (o.memory ?? "").trim();
     if (text) {
-      c.memories.push(userName ? `(chatting with ${userName}) ${text}` : `(with ${listNames(members.filter((m) => m !== c))}) ${text}`);
+      c.memories.push(PVT + (userName ? `(chatting with ${userName}) ${text}` : `(with ${listNames(members.filter((m) => m !== c))}) ${text}`));
       if (c.memories.length > 10) c.memories.shift();
     }
     for (const f of o.facts ?? []) {
@@ -789,4 +815,4 @@ function pairCooldown(rel: Relationship): number {
 function listNames(cs: Character[]) {
   const n = cs.map((c) => c.name);
   return n.length <= 1 ? n.join("") : `${n.slice(0, -1).join(", ")} & ${n[n.length - 1]}`;
-  }
+}
