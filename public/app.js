@@ -1,3 +1,78 @@
+// ---------- festival scoreboard: pure helpers ----------
+// DOM-free so node tests can import this file (repo type=module) without a browser:
+// the whole app below is wrapped in a `typeof document` guard, and these helpers
+// are exposed on globalThis.MiiuFestival. The festival object is produced by the
+// sim engine; every field read here is defensive so the UI no-ops on older servers.
+
+// Count endorsements per candidate id. Unknown voter/candidate ids are ignored;
+// the voter->candidate map means one vote per voter (last one wins server-side).
+function festivalCounts(f) {
+  const counts = new Map((f?.candidates ?? []).map((c) => [String(c.id), 0]));
+  for (const e of f?.endorsements ?? []) {
+    const k = String(e?.candidate);
+    if (counts.has(k)) counts.set(k, counts.get(k) + 1);
+  }
+  return counts;
+}
+
+// Which epochMs estimate the countdown tracks: the vote deadline while
+// campaigning, the next-festival ETA afterwards.
+function festivalTarget(f) {
+  if (!f) return null;
+  if (f.status === "campaigning") return typeof f.deadline === "number" ? f.deadline : null;
+  return typeof f.nextAt === "number" ? f.nextAt : null;
+}
+
+function festivalWinnerName(f) {
+  if (!f || f.winner == null) return null;
+  const c = (f.candidates ?? []).find((c) => String(c.id) === String(f.winner));
+  return c && c.name != null ? String(c.name) : null;
+}
+
+// deadline/nextAt are epochMs estimates the server recomputes per broadcast as
+// now + remaining/speed, over a SIM-ACTIVE clock: paused time does not count.
+// While paused the countdown must freeze, not tick Date.now: freeze at the first
+// paused snapshot's remaining estimate and hold it until a snapshot arrives with
+// paused=false. Speed changes and resumes resync naturally because every new
+// snapshot carries a freshly recomputed estimate.
+function nextFestivalView(prev, f, paused, now) {
+  let frozenRemaining = null;
+  if (paused) {
+    if (prev && prev.paused && prev.frozenRemaining != null) {
+      frozenRemaining = prev.frozenRemaining; // hold the freeze across paused snapshots
+    } else {
+      const t = festivalTarget(f);
+      frozenRemaining = t == null ? null : Math.max(0, t - now);
+    }
+  }
+  return { f, paused: !!paused, receivedAt: now, frozenRemaining };
+}
+
+function festivalClockMs(view, now) {
+  if (!view) return null;
+  if (view.paused) return view.frozenRemaining;
+  const t = festivalTarget(view.f);
+  return t == null ? null : Math.max(0, t - now);
+}
+
+function formatCountdown(ms) {
+  if (ms == null) return "\u2014";
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const ss = String(sec).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+globalThis.MiiuFestival = {
+  festivalCounts,
+  festivalTarget,
+  festivalWinnerName,
+  nextFestivalView,
+  festivalClockMs,
+  formatCountdown,
+};
+
+if (typeof document !== "undefined") {
 const TILE = 40;
 const mapCanvas = document.getElementById("map");
 const mctx = mapCanvas.getContext("2d");
@@ -40,6 +115,7 @@ function connect() {
       renderTargets();
       renderDetail();
       renderChat();
+      renderFestival();
     } else if (msg.type === "event") {
       addEvent(msg.event);
     }
@@ -389,5 +465,63 @@ $("chatEndBtn").onclick = () => sendMsg({ type: "chatEnd" });
 $("pause").onclick = () => sendMsg({ type: "pause" });
 $("speed").oninput = (e) => sendMsg({ type: "speed", value: e.target.value });
 
+
+// ---------- festival scoreboard ----------
+let festivalView = null;
+let lastFestivalKey = "";
+function tickFestivalClock() {
+  const el = $("festivalClock");
+  if (!el || !festivalView) return;
+  el.textContent = formatCountdown(festivalClockMs(festivalView, Date.now()));
+}
+function renderFestival() {
+  const el = $("festival");
+  if (!el) return; // static builds without the panel container: no-op
+  const f = state.festival;
+  if (!f || typeof f !== "object" || typeof f.status !== "string" || !Array.isArray(f.candidates)) {
+    if (festivalView || lastFestivalKey) {
+      festivalView = null;
+      lastFestivalKey = "";
+      el.style.display = "none";
+      el.innerHTML = "";
+    }
+    return;
+  }
+  festivalView = nextFestivalView(festivalView, f, !!state.paused, Date.now());
+  const pausedTag = festivalView.paused ? " (paused)" : "";
+  const counts = festivalCounts(f);
+  const rows = f.candidates
+    .map((c) => ({ id: String(c.id), name: String(c.name ?? "?"), votes: counts.get(String(c.id)) ?? 0 }))
+    .sort((a, b) => b.votes - a.votes || a.name.localeCompare(b.name));
+  const target = festivalTarget(f);
+  const winnerName = festivalWinnerName(f);
+  const clock = (label) =>
+    target != null ? `<div class="fclock">${label} <b id="festivalClock"></b>${pausedTag}</div>` : "";
+  let head = "", foot = "";
+  if (f.status === "campaigning") {
+    head = `<h2>Festival &middot; campaigning</h2>`;
+    foot = clock("Voting ends in");
+  } else if (f.status === "decided") {
+    head = `<h2>Festival &middot; decided</h2>`;
+    foot = `<div class="fwinner">\uD83C\uDFC6 ${winnerName ? esc(winnerName) + " wins the festival!" : "The festival has a winner!"}</div>` +
+      clock("Next festival in");
+  } else {
+    head = `<h2>Festival &middot; ${esc(f.status)}</h2>`;
+    foot = (f.status === "flopped" ? `<div class="fflop">The festival flopped &mdash; no winner this time.</div>` : "") +
+      clock("Next festival in");
+  }
+  const html = head + rows.map((r) =>
+    `<div class="frow${f.winner != null && String(f.winner) === r.id ? " fwon" : ""}"><span class="fname">${esc(r.name)}</span><span class="fcount">${r.votes}</span></div>`
+  ).join("") + foot;
+  el.style.display = "";
+  if (html === lastFestivalKey) return; // structure unchanged; the clock ticks in place
+  lastFestivalKey = html;
+  el.innerHTML = html;
+  tickFestivalClock();
+}
+setInterval(tickFestivalClock, 1000);
+
 connect();
 requestAnimationFrame(frame);
+
+}
