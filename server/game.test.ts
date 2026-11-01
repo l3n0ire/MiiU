@@ -381,3 +381,74 @@ test("provenance: tell-chat derived data is tagged, projected off the wire, kept
   const chatEv = events.find((e) => e.kind === "chat");
   assert.ok(chatEv && !("lines" in chatEv), "private-game chat event carries no transcript");
 });
+
+test("user-chat tell: plumbing flags privateGame, tags summaries/history, wire and event feed stay clean", async () => {
+  const w = freshWorld();
+  const [a] = w.characters;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const llm: LLM = {
+    ...stubLlm,
+    generateLine: async () => ({
+      says: "psst, between us",
+      wants_to_leave: false,
+      action: { kind: "tell" as const, candidate: "", secret: 1, to: "Mitra" },
+    }),
+    summarizeConversation: async (members) => ({
+      outcomes: members.map((m) => ({ name: m.name, memory: "confided to Mitra that his famous potluck cake was store-bought", mood: "neutral" as const, facts: [] })),
+      pairs: [],
+      player_bonds: [{ name: a.name, affinity_delta: 3, relationship: "friend" as const }],
+    }),
+  };
+  const sim = new Sim(w, () => {}, { llm, config: { autoEvents: false, spawning: false, playerSpawning: false } });
+  sim.startUserChat([a.id], "Mitra");
+  sim.userChatMessage("hey");
+  await sleep(30); // let pumpUserChat run the line + action through
+  const chat = (sim as any).userChat;
+  assert.equal(chat.privateGame, true, "pumpUserChat flags a chat where a resident told the player");
+  sim.endUserChat();
+  await sleep(30); // let the summary land
+  // World keeps the derived data, provenance-tagged (prompts/saves stay full fidelity).
+  assert.ok(a.memories.some((m) => m.startsWith("(private)") && m.includes("confided to Mitra")), a.memories.join("\n"));
+  const bondHist = getRel(w, a.id, USER_ID).history.at(-1)!;
+  assert.ok(bondHist.startsWith("(private)"), bondHist);
+  // The wire projection drops the paraphrased summary and the bond history entry.
+  const snap = sim.snapshot() as any;
+  const wire = JSON.stringify(snap);
+  assert.ok(!wire.includes("confided to Mitra"), "paraphrased tell summary must not reach the observer");
+  assert.ok(!wire.includes("(private)"));
+  const relWire = snap.relationships.find((r: any) => [r.a, r.b].includes(USER_ID));
+  assert.ok(relWire && relWire.history.every((h: string) => !h.startsWith("(private)")));
+  // And the event generator is fed no transcript from the private chat.
+  assert.equal((sim as any).recentChats.at(-1).lines.length, 0);
+});
+
+test("event generator: private chats contribute no transcript, public chats still do", async () => {
+  const w = freshWorld();
+  const fed: string[] = [];
+  const llm: LLM = {
+    ...stubLlm,
+    generateEvent: async (recentChats) => {
+      fed.push(JSON.stringify(recentChats));
+      return { headline: "Festival of crumbs", target: "everyone", gather: "nowhere" };
+    },
+  };
+  const sim = new Sim(w, () => {}, { llm, config: { autoEvents: true, autoEventCooldown: 0, spawning: false, playerSpawning: false } });
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const [a, b] = w.characters;
+  const rel = getRel(w, a.id, b.id);
+  const mkChat = (privateGame: boolean, text: string) => ({
+    members: [a, b], present: [a, b], pairs: [{ a, b, rel }], place: "Park",
+    lines: [{ speaker: a.name, text }],
+    idx: 1, nextAt: 0, lastSpeaker: null, generating: false, finished: true, outcome: null, privateGame,
+  }) as any;
+  (sim as any).nextAutoEvent = 1;
+  (sim as any).finishChat(mkChat(true, "the cake was store-bought, promise you won't tell"), { outcomes: [], pairs: [] });
+  await sleep(50);
+  (sim as any).nextAutoEvent = 1;
+  (sim as any).finishChat(mkChat(false, "what a lovely sunny day"), { outcomes: [], pairs: [] });
+  await sleep(50);
+  assert.equal(fed.length, 2, "both completed chats roll for an island event");
+  assert.ok(!fed[0].includes("store-bought"), "private transcript never reaches generateEvent");
+  assert.ok(fed[1].includes("sunny day"), "public transcripts still feed generateEvent");
+  assert.ok(!fed[1].includes("store-bought"), "earlier private transcript stays out of later feeds");
+});
