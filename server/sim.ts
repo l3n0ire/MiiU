@@ -4,7 +4,7 @@ import {
   type Line, type Outcome, type PairInfo,
 } from "./llm.ts";
 import {
-  LANDMARKS, getRel, newCharacter, placeName, randomWalkable, relKey, saveWorld, workplaceFor,
+  LANDMARKS, getRel, newCharacter, placeName, randomWalkable, recordRelChange, relKey, saveWorld, workplaceFor,
   type Character, type World, type WorldEvent,
 } from "./world.ts";
 
@@ -275,8 +275,10 @@ export class Sim {
           const a = byName(p.a), b = byName(p.b);
           if (!a || !b) continue;
           const rel = getRel(this.world, a.id, b.id);
+          const before = rel.timeline.length ? rel.label : null;
           rel.affinity = Math.max(-100, Math.min(100, rel.affinity + p.affinity_delta));
           rel.label = p.relationship;
+          recordRelChange(rel, p.affinity_delta, `Chatting with ${chat.userName} at ${chat.place}`, before);
           rel.history.push(`Chatting with ${chat.userName} at ${chat.place}: ${outcome.outcomes.find((o) => o.name === a.name)?.memory ?? "a chat"}`);
           if (rel.history.length > 10) rel.history.shift();
         }
@@ -448,8 +450,10 @@ export class Sim {
       const a = byName(p.a), b = byName(p.b);
       if (!a || !b) continue;
       const rel = getRel(this.world, a.id, b.id);
+      const before = rel.timeline.length ? rel.label : null;
       rel.affinity = Math.max(-100, Math.min(100, rel.affinity + p.affinity_delta));
       rel.label = p.relationship;
+      recordRelChange(rel, p.affinity_delta, `Chat at ${chat.place}${members.length > 2 ? " (group chat)" : ""}`, before);
       const memory = outcome.outcomes.find((o) => o.name === a.name)?.memory;
       if (memory) {
         rel.history.push(`At ${chat.place}${members.length > 2 ? " (group chat)" : ""}: ${memory}`);
@@ -539,6 +543,7 @@ export class Sim {
         const rel = getRel(this.world, bond.a.id, c.id);
         rel.affinity = 30;
         rel.label = r.relationship;
+        recordRelChange(rel, 30, `${c.name} arrived because of ${bond.a.name}.`, null);
         rel.history.push(`${c.name} arrived because of ${bond.a.name}.`);
         saveWorld(this.world);
         void this.triggerEvent(`${c.name} arrived on the island, brought by ${bond.a.name}!`, null, null);

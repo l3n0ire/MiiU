@@ -36,6 +36,16 @@ export interface Character {
   bubbleUntil?: number;
 }
 
+// One recorded change in a pair's story: what the label/affinity became, and what caused it.
+export interface RelTimelineEntry {
+  t: number; // wall-clock ms
+  from: RelLabel | null; // null when the relationship itself begins
+  to: RelLabel;
+  delta: number; // affinity change applied
+  affinity: number; // affinity after the change
+  cause: string; // the chat or event behind it
+}
+
 export interface Relationship {
   a: string;
   b: string;
@@ -43,6 +53,13 @@ export interface Relationship {
   label: RelLabel;
   lastTalk: number;
   history: string[];
+  timeline: RelTimelineEntry[];
+}
+
+// Record a label/affinity change with its cause (issue #12). Call after applying the change.
+export function recordRelChange(rel: Relationship, delta: number, cause: string, from: RelLabel | null) {
+  rel.timeline.push({ t: Date.now(), from, to: rel.label, delta, affinity: rel.affinity, cause });
+  if (rel.timeline.length > 50) rel.timeline.shift();
 }
 
 export interface WorldEvent {
@@ -73,7 +90,7 @@ export const relKey = (a: string, b: string) => [a, b].sort().join("|");
 
 export function getRel(world: World, a: string, b: string): Relationship {
   const key = relKey(a, b);
-  return (world.relationships[key] ??= { a, b, affinity: 0, label: "stranger", lastTalk: 0, history: [] });
+  return (world.relationships[key] ??= { a, b, affinity: 0, label: "stranger", lastTalk: 0, history: [], timeline: [] });
 }
 
 export function placeName(pos: Vec): string {
@@ -133,7 +150,7 @@ const FILE = new URL("../world.json", import.meta.url);
 export function loadWorld(): World {
   if (existsSync(FILE)) {
     const w = JSON.parse(readFileSync(FILE, "utf8")) as World;
-    for (const r of Object.values(w.relationships)) r.lastTalk = 0; // sim clock restarts at 0
+    for (const r of Object.values(w.relationships)) { r.lastTalk = 0; r.timeline ??= []; } // sim clock restarts at 0; backfill pre-timeline saves
     for (const c of w.characters) { c.state = "wandering"; c.bubble = null; c.idleUntil = 0; c.occupation ??= randomOccupation(); } // backfill jobs for pre-#6 saves
     return w;
   }

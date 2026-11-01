@@ -251,6 +251,9 @@ function renderDetail() {
     <div class="meta">❤ ${esc(c.likes || "—")} · ✖ ${esc(c.dislikes || "—")}</div>
     <h2 style="margin-top:10px">Feelings</h2>
     ${rels.length ? rels.map((r) => `<span class="chip" style="background:${relColor(r)}22">${esc(nameOf(r.a === c.id ? r.b : r.a))}: ${r.label} (${r.affinity})</span>`).join("") : '<p class="empty">Hasn\'t met anyone yet.</p>'}
+    ${rels.some((r) => r.timeline?.length) ? `<h2 style="margin-top:10px">History</h2>` + rels.filter((r) => r.timeline?.length).map((r) => `
+      <div class="meta" style="margin-top:6px"><b>${esc(nameOf(r.a === c.id ? r.b : r.a))}</b></div>
+      <ul style="margin-top:2px">${r.timeline.slice(-5).reverse().map((e) => `<li class="meta">${esc(e.cause)}: ${e.from ? esc(e.from) + " → " : "became "}<b>${esc(e.to)}</b> (${e.delta >= 0 ? "+" : ""}${e.delta}, now ${e.affinity})</li>`).join("")}</ul>`).join("") : ""}
     <h2 style="margin-top:10px">Memories</h2>
     ${c.memories.length ? `<ul>${c.memories.slice().reverse().map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : '<p class="empty">No memories yet.</p>'}
     <div class="row" style="margin-top:8px">
@@ -277,6 +280,25 @@ function addEvent(ev) {
     (ev.lines ?? []).map((l) => `<div class="line"><b>${esc(l.speaker)}:</b> ${esc(l.text)}</div>`).join("");
   $("feed").prepend(div);
 }
+
+graphCanvas.addEventListener("mousemove", (e) => {
+  const rect = graphCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let best = null, bestD = 10;
+  for (const r of state.relationships) {
+    const a = nodes.get(r.a), b = nodes.get(r.b);
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((mx - a.x) * dx + (my - a.y) * dy) / len2));
+    const d = Math.hypot(mx - (a.x + t * dx), my - (a.y + t * dy));
+    if (d < bestD) { best = r; bestD = d; }
+  }
+  if (!best) { graphCanvas.title = ""; return; }
+  const latest = best.timeline?.at(-1);
+  graphCanvas.title = `${nameOf(best.a)} & ${nameOf(best.b)}: ${best.label} (${best.affinity})` +
+    (latest ? ` - latest: ${latest.cause}: ${latest.from ? latest.from + " -> " : "became "}${latest.to}` : "");
+});
+graphCanvas.addEventListener("mouseleave", () => { graphCanvas.title = ""; });
 
 $("create").addEventListener("submit", (e) => {
   e.preventDefault();
