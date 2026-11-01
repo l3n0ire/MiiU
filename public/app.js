@@ -12,7 +12,7 @@ let selectedId = null;
 const drawPos = new Map(); // id -> smoothed {x,y}
 const nodes = new Map(); // id -> graph node {x,y,vx,vy}
 
-const nameOf = (id) => state.characters.find((c) => c.id === id)?.name ?? "?";
+const nameOf = (id) => (id === "__user__" ? "You" : state.characters.find((c) => c.id === id)?.name ?? "?");
 const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
 
 function connect() {
