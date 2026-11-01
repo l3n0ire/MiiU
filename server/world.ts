@@ -6,8 +6,15 @@ export const MAP_H = 15;
 export type Mood = "happy" | "sad" | "angry" | "excited" | "bored" | "love" | "neutral";
 export const MOODS: Mood[] = ["happy", "sad", "angry", "excited", "bored", "love", "neutral"];
 
-export type RelLabel = "stranger" | "acquaintance" | "friend" | "best friend" | "crush" | "rival";
-export const REL_LABELS: RelLabel[] = ["stranger", "acquaintance", "friend", "best friend", "crush", "rival"];
+export type RelLabel =
+  | "stranger" | "acquaintance" | "friend" | "best friend"
+  | "crush" | "rival" | "family" | "mentor" | "ex"
+  | "frenemy" | "coworker" | "neighbor" | "enemy";
+export const REL_LABELS: RelLabel[] = [
+  "stranger", "acquaintance", "friend", "best friend",
+  "crush", "rival", "family", "mentor", "ex",
+  "frenemy", "coworker", "neighbor", "enemy",
+];
 
 export interface Vec { x: number; y: number }
 

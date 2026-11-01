@@ -80,7 +80,7 @@ function outcomeInstructions(names: string[], pairs: PairInfo[]) {
 - pairs: for EACH pair (${pairs.map((p) => `${p.a.name}+${p.b.name}`).join(", ")}): affinity_delta (-15..15) for how this chat changed their feelings, and their relationship label afterwards`;
 }
 
-function cleanOutcome(o: Outcome, names: string[]): Outcome {
+function cleanOutcome(o: Outcome, names: string[], pairs: PairInfo[]): Outcome {
   return {
     outcomes: (o.outcomes ?? [])
       .filter((x) => names.includes(x.name))
@@ -90,7 +90,10 @@ function cleanOutcome(o: Outcome, names: string[]): Outcome {
       .map((p) => ({
         ...p,
         affinity_delta: Math.max(-15, Math.min(15, Math.round(Number(p.affinity_delta) || 0))),
-        relationship: REL_LABELS.includes(p.relationship) ? p.relationship : "acquaintance",
+        // On invalid model output keep the pair's current label instead of resetting to acquaintance.
+        relationship: REL_LABELS.includes(p.relationship)
+          ? p.relationship
+          : pairs.find((q) => (q.a.name === p.a && q.b.name === p.b) || (q.a.name === p.b && q.b.name === p.a))?.rel.label ?? "acquaintance",
       })),
   };
 }
@@ -182,7 +185,7 @@ ${transcript(lines)}
 
 Decide:
 ${outcomeInstructions(names, pairs)}`;
-  return cleanOutcome(await callJson<Outcome>(prompt, schema), names);
+  return cleanOutcome(await callJson<Outcome>(prompt, schema), names, pairs);
 }
 
 export interface Reaction { name: string; says: string; mood: Mood; memory: string }
