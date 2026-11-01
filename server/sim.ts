@@ -427,7 +427,12 @@ export class Sim {
   private recentActivityFor(speaker: Character): string[] {
     const out: string[] = [];
     const events = this.world.events;
-    for (let i = events.length - 1; i >= 0 && out.length < 3; i--) {
+    // Priority order: island news, then this resident's most recent chats. generateLine
+    // keeps the first 4 entries, and pumpUserChat prepends the player-bond line, so the
+    // highest-priority context always survives the cap.
+    const news = [...events].reverse().find((ev) => ev.kind === "world");
+    if (news) out.push(`Island news: ${news.text.slice(0, 120)}`);
+    for (let i = events.length - 1; i >= 0 && out.length < 4; i--) {
       const ev = events[i];
       if (ev.kind !== "chat" || !ev.participants.includes(speaker.id)) continue;
       const others = ev.participants
@@ -438,8 +443,6 @@ export class Sim {
       const first = ev.lines?.find((l) => l.speaker)?.text.slice(0, 100);
       out.push(`You chatted with ${others || "someone"}${ev.place ? ` at ${ev.place}` : ""}${first ? `: "${first}"` : ""}`);
     }
-    const news = [...events].reverse().find((ev) => ev.kind === "world");
-    if (news) out.push(`Island news: ${news.text.slice(0, 120)}`);
     return out;
   }
 
