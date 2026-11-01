@@ -25,6 +25,10 @@ const simConfig = {
   spawnChance: process.env.MIIU_SPAWN_CHANCE === undefined ? undefined : Number(process.env.MIIU_SPAWN_CHANCE),
   playerSpawning: process.env.MIIU_PLAYER_SPAWNING !== "off",
   socialWander: process.env.MIIU_SOCIAL_WANDER !== "off",
+  game: process.env.MIIU_GAME !== "off",
+  gameCampaignMs: process.env.MIIU_GAME_CAMPAIGN_MS === undefined ? undefined : Number(process.env.MIIU_GAME_CAMPAIGN_MS),
+  gameCooldownMs: process.env.MIIU_GAME_COOLDOWN_MS === undefined ? undefined : Number(process.env.MIIU_GAME_COOLDOWN_MS),
+  gameTellWindowMs: process.env.MIIU_GAME_TELL_WINDOW_MS === undefined ? undefined : Number(process.env.MIIU_GAME_TELL_WINDOW_MS),
 };
 
 const PORT = Number(process.env.PORT ?? 3000);
