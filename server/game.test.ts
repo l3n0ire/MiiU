@@ -7,7 +7,17 @@ import {
   type ActionContext,
 } from "./game.ts";
 import { getRel, migrateWorld, seedWorld, type World } from "./world.ts";
-import { USER_ID } from "./llm.ts";
+import { USER_ID, type LLM } from "./llm.ts";
+import { Sim } from "./sim.ts";
+
+const stubLlm: LLM = {
+  model: "stub",
+  generateLine: async (speaker) => ({ says: `${speaker.name} says hi`, wants_to_leave: false, action: { kind: "none", candidate: "", secret: 0, to: "" } }),
+  summarizeConversation: async (members) => ({ outcomes: members.map((m) => ({ name: m.name, memory: "", mood: "neutral" as const, facts: [] })), pairs: [] }),
+  generateReactions: async (_e, chars) => chars.map((c) => ({ name: c.name, says: "wow", mood: "happy" as const, memory: "x" })),
+  generateEvent: async () => { throw new Error("unused"); },
+  generateResident: async () => { throw new Error("unused"); },
+};
 
 const TUNING = { ...DEFAULT_TUNING, campaignMs: 60_000, cooldownMs: 60_000, tellWindowMs: 30_000 };
 
@@ -262,4 +272,112 @@ test("derived context: watchers and later chats expose nothing private before ex
   // b's view lists the secret, c's does not - already covered; exposure flips it public.
   applyAction(w, b.id, { kind: "expose", secret: 1, to: c.name }, ctx(w, b.id, c.id));
   assert.ok(gameViewFor(w, c.id, TUNING).includes("[already public]") || !gameViewFor(w, c.id, TUNING).includes(secret.text));
+});
+
+// ---------- observer-channel privacy, migration hygiene, player referent (review on 0f3f32e) ----------
+
+test("snapshot: broadcast redacts private ledger data but keeps observer fields", () => {
+  const w = freshWorld();
+  const sim = new Sim(w, () => {}, { llm: stubLlm });
+  const [a, b, c] = w.characters;
+  const secret = w.game.secrets.find((s) => s.subject === a.id)!;
+
+  // legal one-on-one tell through the real ledger
+  const r = applyAction(w, a.id, { kind: "tell", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  assert.equal(r.kind, "tell");
+  assert.equal(secret.exposed, false);
+
+  const snap = sim.snapshot() as any;
+  const wire = JSON.stringify({ type: "state", ...snap });
+  assert.ok(!wire.includes(secret.text), "unexposed secret text must not reach clients");
+  const bWire = snap.characters.find((x: any) => x.id === b.id);
+  assert.ok(bWire.memories.every((m: string) => !m.startsWith("(secret)")), "tell records stay server-side");
+  assert.ok(!("facts" in bWire), "facts are prompt substrate, not wire data");
+  assert.equal(typeof bWire.personality, "string", "observer detail fields preserved");
+  assert.ok(snap.characters.every((x: any) => Array.isArray(x.memories)));
+
+  // organic memories still flow; organic copies of an unexposed secret do not
+  c.memories.push("Saw a shooting star over the beach.");
+  c.memories.push(`Overheard something: ${secret.text}`);
+  const snap2 = sim.snapshot() as any;
+  const cWire = snap2.characters.find((x: any) => x.id === c.id);
+  assert.ok(cWire.memories.some((m: string) => m.includes("shooting star")), "ordinary observer memories kept");
+  assert.ok(!JSON.stringify(snap2).includes(secret.text), "summarizer-style copies of the text are scrubbed too");
+
+  // exposure is island news by design; the tell-chain the subject learns stays server-side
+  const rx = applyAction(w, b.id, { kind: "expose", secret: 1 }, ctx(w, b.id, c.id));
+  assert.equal(rx.kind, "expose");
+  assert.ok(rx.event!.includes(secret.text), "exposure event is public by design");
+  const aWire = (sim.snapshot() as any).characters.find((x: any) => x.id === a.id);
+  assert.ok(
+    aWire.memories.every((m: string) => !m.startsWith("(exposed)") && !m.includes("spread via")),
+    "private tell-chain learning must not be broadcast",
+  );
+});
+
+test("migrateWorld: candidate voters and ghost endorsements are dropped", () => {
+  const w = freshWorld();
+  const [a, b, c] = w.characters;
+  const raw = JSON.parse(JSON.stringify(w));
+  raw.game.festival = {
+    status: "campaigning",
+    candidates: [a.id, b.id],
+    endorsements: { [a.id]: b.id, [c.id]: b.id, ghost: a.id, [c.id + "x"]: "nobody" },
+    deadline: 100, winner: null, nextAt: null,
+  };
+  const m = migrateWorld(raw);
+  assert.deepEqual(m.game.festival!.endorsements, { [c.id]: b.id }, "only known non-candidate voters backing real candidates survive");
+});
+
+test("gameViewFor + ledgers: the player renders in third person for resident readers", () => {
+  const w = freshWorld();
+  const [a, b] = w.characters;
+  w.game.secrets.push({ id: "secX", subject: USER_ID, text: "The player once entered a pie contest.", knownBy: [a.id], toldBy: { [a.id]: null }, exposed: false });
+  startRace(w);
+  const pr = applyAction(w, a.id, { kind: "promise_keep", secret: 2, to: "You" }, ctx(w, a.id, USER_ID));
+  assert.equal(pr.kind, "promise_keep");
+  const view = gameViewFor(w, a.id, TUNING);
+  assert.ok(view.includes("about the player"), view);
+  assert.ok(view.includes("Promise you made: keep the secret about the player"), view);
+  assert.ok(!view.includes("about you"), "prompt context must not call the player 'you'");
+  const mem = w.characters.find((c) => c.id === a.id)!.memories.join("\n");
+  assert.ok(!mem.includes(" promised you to "), mem);
+  assert.ok(mem.includes(`promised the player to`), mem);
+  // second resident's view of the same pledge also third-person
+  const viewB = gameViewFor(w, b.id, TUNING);
+  assert.ok(!viewB.includes("about you"), viewB);
+});
+
+test("provenance: tell-chat derived data is tagged, projected off the wire, kept in world", () => {
+  const w = freshWorld();
+  const events: any[] = [];
+  const sim = new Sim(w, (e) => events.push(e), { llm: stubLlm, config: { autoEvents: false, spawning: false } });
+  const [a, b] = w.characters;
+  const rel = getRel(w, a.id, b.id);
+  const chat = {
+    members: [a, b], present: [a, b], pairs: [{ a, b, rel }], place: "Park",
+    lines: [{ speaker: a.name, text: "psst" }],
+    idx: 1, nextAt: 0, lastSpeaker: null, generating: false, finished: true, outcome: null,
+    privateGame: true, // set by Sim when a ledger tell landed in this chat
+  } as any;
+  (sim as any).finishChat(chat, {
+    outcomes: [{ name: a.name, memory: "whispered about the potluck", mood: "neutral" as const, facts: ["the cake was store-bought"] }],
+    pairs: [{ a: a.name, b: b.name, affinity_delta: 2, relationship: "friend" as const }],
+  });
+  // World keeps everything for prompts/saves (server-side, knowledge-gated).
+  assert.ok(a.memories.some((m) => m.startsWith("(private)")), "derived memory kept in world with provenance tag");
+  assert.ok(rel.history.some((h) => h.startsWith("(private)")), "derived history kept in world with provenance tag");
+  assert.ok(a.facts.includes("the cake was store-bought"), "facts stay in the world");
+  // The wire projection drops them by provenance - no exact-text match needed.
+  const snap = sim.snapshot() as any;
+  const wire = JSON.stringify(snap);
+  assert.ok(!wire.includes("whispered about the potluck"), "paraphrase without any secret text still excluded");
+  assert.ok(!wire.includes("(private)"));
+  const aWire = snap.characters.find((x: any) => x.id === a.id);
+  assert.ok(!("facts" in aWire));
+  const relWire = snap.relationships.find((r: any) => [r.a, r.b].sort().join("|") === [a.id, b.id].sort().join("|"));
+  assert.ok(relWire.history.every((h: string) => !h.startsWith("(private)")));
+  // The private chat's transcript never hits the event log either.
+  const chatEv = events.find((e) => e.kind === "chat");
+  assert.ok(chatEv && !("lines" in chatEv), "private-game chat event carries no transcript");
 });
