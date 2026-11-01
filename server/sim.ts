@@ -1,9 +1,9 @@
 import {
-  asUser, generateEvent, generateLine, generateReactions, summarizeConversation,
+  asUser, generateEvent, generateLine, generateReactions, generateResident, summarizeConversation,
   type Line, type Outcome, type PairInfo,
 } from "./llm.ts";
 import {
-  LANDMARKS, getRel, placeName, randomWalkable, relKey, saveWorld,
+  LANDMARKS, getRel, newCharacter, placeName, randomWalkable, relKey, saveWorld,
   type Character, type World, type WorldEvent,
 } from "./world.ts";
 
@@ -25,6 +25,12 @@ const AUTO_MIN = Math.max(1, Number(process.env.MIIU_AUTO_EVENT_MIN ?? 2)); // c
 const AUTO_MAX = Math.max(AUTO_MIN, Number(process.env.MIIU_AUTO_EVENT_MAX ?? 5)); // upper bound
 const AUTO_COOLDOWN = Number(process.env.MIIU_AUTO_EVENT_COOLDOWN ?? 120_000); // sim-ms between auto events
 const rollNextAuto = () => AUTO_MIN + Math.floor(Math.random() * (AUTO_MAX - AUTO_MIN + 1));
+// Residents bringing in newcomers (issue #4). Population is hard-capped.
+const MAX_POPULATION = Math.max(1, Number(process.env.MIIU_MAX_POPULATION ?? 15));
+const SPAWNING = process.env.MIIU_SPAWNING !== "off";
+const SPAWN_AFFINITY = Number(process.env.MIIU_SPAWN_AFFINITY ?? 50); // bond strength that qualifies
+const SPAWN_CHANCE = Math.min(1, Math.max(0, Number(process.env.MIIU_SPAWN_CHANCE ?? 0.35)));
+const SPAWN_LABELS = ["friend", "best friend", "crush", "family"]; // qualifying bond stages
 const MIN_LINES_BEFORE_LEAVING = 2; // nobody walks off before this many lines have been said
 
 interface UserChat {
@@ -82,6 +88,10 @@ export class Sim {
   }
 
   addCharacter(c: Character) {
+    if (this.world.characters.length >= MAX_POPULATION) {
+      this.log({ kind: "system", participants: [], text: `${c.name} wanted to move in, but the island is full (max ${MAX_POPULATION}).` });
+      return;
+    }
     this.world.characters.push(c);
     this.log({ kind: "join", participants: [c.id], text: `${c.name} moved to the island!` });
     saveWorld(this.world);
@@ -448,6 +458,7 @@ export class Sim {
     this.endChat(chat);
     saveWorld(this.world);
     this.maybeAutoEvent();
+    this.maybeSpawn(chat.pairs);
   }
 
   // Roll for a spontaneous event after a random number of completed chats (issue #2).
@@ -466,6 +477,27 @@ export class Sim {
         void this.triggerEvent(ev.headline, target?.id ?? null, ev.gather === "nowhere" ? null : ev.gather);
       })
       .catch((err) => console.error("LLM error (auto event):", err));
+  }
+
+  private maybeSpawn(pairs: PairInfo[]) {
+    if (!SPAWNING || this.world.characters.length >= MAX_POPULATION) return;
+    const strong = pairs.filter((p) => p.rel.affinity >= SPAWN_AFFINITY && SPAWN_LABELS.includes(p.rel.label));
+    if (!strong.length || Math.random() >= SPAWN_CHANCE) return;
+    const bond = strong[Math.floor(Math.random() * strong.length)];
+    generateResident(bond.a, this.world.characters)
+      .then((r) => {
+        if (this.world.characters.length >= MAX_POPULATION) return; // re-check: cap still binding after async gap
+        const c = newCharacter({ name: r.name, personality: r.personality, likes: r.likes, dislikes: r.dislikes, color: r.color });
+        this.addCharacter(c);
+        if (!this.world.characters.includes(c)) return; // addCharacter refused (cap)
+        const rel = getRel(this.world, bond.a.id, c.id);
+        rel.affinity = 30;
+        rel.label = r.relationship;
+        rel.history.push(`${c.name} arrived because of ${bond.a.name}.`);
+        saveWorld(this.world);
+        void this.triggerEvent(`${c.name} arrived on the island, brought by ${bond.a.name}!`, null, null);
+      })
+      .catch((err) => console.error("LLM error (spawn):", err));
   }
 
   private failChat(chat: ActiveChat, err: Error) {
