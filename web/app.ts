@@ -163,7 +163,10 @@ function showSetup(onStart: () => void) {
     "max-height:90vh", "overflow-y:auto",
   ].join(";"));
   card.innerHTML = `
-    <h2 style="margin:0 0 4px;font-size:18px">Your island, your model</h2>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <h2 style="margin:0 0 4px;font-size:18px">Your island, your model</h2>
+      <button type="button" id="miiuClose" aria-label="Close setup" style="background:none;border:none;font-size:18px;cursor:pointer;color:#8a8278;padding:0 0 0 12px;line-height:1">✕</button>
+    </div>
     <p style="margin:0 0 14px;color:#8a8278">This island lives in this browser only - it pauses when you close the tab,
     and its save stays on this device. Conversations are written by a model <b>you</b> connect.</p>
     <div style="display:flex;gap:8px;margin-bottom:12px">
@@ -187,10 +190,12 @@ function showSetup(onStart: () => void) {
       <input id="miiuOllamaUrl" type="text" autocomplete="off" value="http://localhost:11434" style="width:100%;margin:4px 0" />
       <label style="font-size:13px;color:#8a8278">Model (optional)</label>
       <input id="miiuOllamaModel" type="text" autocomplete="off" placeholder="default: gemma4-pi" style="width:100%;margin:4px 0" />
-      <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Your browser talks straight to your Ollama; nothing is sent anywhere else.
-      Two one-time steps on your machine: start Ollama with <code>OLLAMA_ORIGINS=${location.origin} ollama serve</code>
-      so it accepts this site's requests, and allow the browser's "local network access" permission if it asks. Ollama must run on this computer (localhost/127.0.0.1) - a server on another machine isn't reachable from this page.
-      Fully offline alternative: run the repo locally (<code>npm start</code>).</p>
+      <ol style="font-size:12px;color:#8a8278;margin:0 0 10px;padding-left:18px">
+        <li>Start Ollama on this computer: <code>OLLAMA_ORIGINS=${location.origin} ollama serve</code></li>
+        <li>Allow "local network access" if the browser asks.</li>
+        <li>Keep Ollama running here - this page can only reach Ollama on this computer.</li>
+      </ol>
+      <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Prefer fully offline? Run the repo locally: <code>npm start</code></p>
       <button type="button" id="miiuTestOllama">Test connection</button>
       <span id="miiuOllamaStatus" style="font-size:12px;margin-left:8px"></span>
     </div>
@@ -223,6 +228,12 @@ function showSetup(onStart: () => void) {
   if (hasKey) $("#miiuKey").value = "••••••••••••"; // hint a key is remembered; never echo it
   $("#miiuRemember").checked = Boolean(existing?.rememberKey && hasKey); // reflect current state; unchecking + Start forgets
   paint();
+
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+  document.addEventListener("keydown", onKey);
+  $("#miiuClose").onclick = close;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
 
   $("#miiuTestOllama").onclick = async () => {
     const status = $("#miiuOllamaStatus");
@@ -257,7 +268,7 @@ function showSetup(onStart: () => void) {
       };
     }
     localStorage.setItem(SETUP_KEY, JSON.stringify(setup));
-    overlay.remove();
+    close();
     onStart();
   };
 
