@@ -1,5 +1,6 @@
 import {
   asUser, generateEvent, generateLine, generateReactions, generateResident, summarizeConversation,
+  USER_ID,
   type Line, type Outcome, type PairInfo,
 } from "./llm.ts";
 import {
@@ -31,6 +32,8 @@ const SPAWNING = process.env.MIIU_SPAWNING !== "off";
 const SPAWN_AFFINITY = Number(process.env.MIIU_SPAWN_AFFINITY ?? 50); // bond strength that qualifies
 const SPAWN_CHANCE = Math.min(1, Math.max(0, Number(process.env.MIIU_SPAWN_CHANCE ?? 0.35)));
 const SPAWN_LABELS = ["friend", "best friend", "crush", "family"]; // qualifying bond stages
+// Player-bond spawning (issue #13): a strong enough bond with the player can also bring a newcomer.
+const PLAYER_SPAWNING = process.env.MIIU_PLAYER_SPAWNING !== "off";
 const MIN_LINES_BEFORE_LEAVING = 2; // nobody walks off before this many lines have been said
 
 interface UserChat {
@@ -255,9 +258,19 @@ export class Sim {
     const spoken = chat.lines.filter((l) => l.speaker);
     if (spoken.length < 2 || !chat.allMembers.length) { finish(); return; }
     chat.summarizing = true;
-    summarizeConversation(chat.allMembers, chat.pairs, spoken, chat.place)
+    summarizeConversation(chat.allMembers, chat.pairs, spoken, chat.place, chat.userName)
       .then((outcome) => {
         const byName = (n: string) => chat.allMembers.find((c) => c.name === n);
+        // Bonds with the player live in ordinary Relationship records keyed by USER_ID.
+        for (const b of outcome.player_bonds ?? []) {
+          const c = byName(b.name);
+          if (!c) continue;
+          const rel = getRel(this.world, c.id, USER_ID);
+          rel.affinity = Math.max(-100, Math.min(100, rel.affinity + b.affinity_delta));
+          rel.label = b.relationship;
+          rel.history.push(`Bond with ${chat.userName} at ${chat.place}: ${outcome.outcomes.find((o) => o.name === c.name)?.memory ?? "a chat"}`);
+          if (rel.history.length > 10) rel.history.shift();
+        }
         for (const p of outcome.pairs) {
           const a = byName(p.a), b = byName(p.b);
           if (!a || !b) continue;
@@ -278,6 +291,7 @@ export class Sim {
         if (this.recentChats.length > 3) this.recentChats.shift();
         saveWorld(this.world);
         this.maybeAutoEvent(); // user chats are completed conversations too (issue #2)
+        this.maybePlayerSpawn(chat);
       })
       .catch((err) => console.error("LLM error (user chat summary):", err))
       .finally(() => { chat.summarizing = false; finish(); });
@@ -477,6 +491,32 @@ export class Sim {
         void this.triggerEvent(ev.headline, target?.id ?? null, ev.gather === "nowhere" ? null : ev.gather);
       })
       .catch((err) => console.error("LLM error (auto event):", err));
+  }
+
+  // A mii whose bond with the player is strong enough can invite someone from off-island (issue #13).
+  // Same population cap and arrival flow as resident-pair spawns; only the trigger differs.
+  private maybePlayerSpawn(chat: UserChat) {
+    if (!PLAYER_SPAWNING || this.world.characters.length >= MAX_POPULATION) return;
+    const strong = chat.allMembers.filter((c) => {
+      const rel = this.world.relationships[relKey(c.id, USER_ID)];
+      return rel && rel.affinity >= SPAWN_AFFINITY && SPAWN_LABELS.includes(rel.label);
+    });
+    if (!strong.length || Math.random() >= SPAWN_CHANCE) return;
+    const inviter = strong[Math.floor(Math.random() * strong.length)];
+    generateResident(inviter, this.world.characters)
+      .then((r) => {
+        if (this.world.characters.length >= MAX_POPULATION) return; // re-check: cap still binding after async gap
+        const c = newCharacter({ name: r.name, personality: r.personality, likes: r.likes, dislikes: r.dislikes, color: r.color });
+        this.addCharacter(c);
+        if (!this.world.characters.includes(c)) return; // addCharacter refused (cap)
+        const rel = getRel(this.world, inviter.id, c.id);
+        rel.affinity = 30;
+        rel.label = r.relationship;
+        rel.history.push(`${c.name} arrived because of ${chat.userName}.`);
+        saveWorld(this.world);
+        void this.triggerEvent(`${c.name} arrived on the island, invited by ${inviter.name} because of you!`, null, null);
+      })
+      .catch((err) => console.error("LLM error (player spawn):", err));
   }
 
   private maybeSpawn(pairs: PairInfo[]) {

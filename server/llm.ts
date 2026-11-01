@@ -29,6 +29,8 @@ export function asUser(name = "You"): Character {
 export interface Outcome {
   outcomes: { name: string; memory: string; mood: Mood }[];
   pairs: { a: string; b: string; affinity_delta: number; relationship: RelLabel }[];
+  // Present only for chats the player joined: each member's bond with the player afterwards.
+  player_bonds?: { name: string; affinity_delta: number; relationship: RelLabel }[];
 }
 
 export interface PairInfo { a: Character; b: Character; rel: Relationship }
@@ -45,8 +47,26 @@ ${mem}`;
 
 const transcript = (lines: Line[]) => lines.map((l) => `${l.speaker}: ${l.text}`).join("\n");
 
-function outcomeSchema(names: string[], pairs: PairInfo[]) {
+function outcomeSchema(names: string[], pairs: PairInfo[], playerName?: string) {
   return {
+    ...(playerName
+      ? {
+          player_bonds: {
+            type: "array",
+            minItems: names.length,
+            maxItems: names.length,
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string", enum: names },
+                affinity_delta: { type: "integer", minimum: -15, maximum: 15 },
+                relationship: { type: "string", enum: REL_LABELS },
+              },
+              required: ["name", "affinity_delta", "relationship"],
+            },
+          },
+        }
+      : {}),
     outcomes: {
       type: "array",
       minItems: names.length,
@@ -75,13 +95,22 @@ function outcomeSchema(names: string[], pairs: PairInfo[]) {
   };
 }
 
-function outcomeInstructions(names: string[], pairs: PairInfo[]) {
-  return `- outcomes: for EACH of ${names.join(", ")}: a one-sentence first-person memory of this chat, and their mood afterwards
+function outcomeInstructions(names: string[], pairs: PairInfo[], playerName?: string) {
+  return `${playerName ? `- player_bonds: for EACH of ${names.join(", ")}: affinity_delta (-15..15) for how this chat changed their bond with ${playerName} (the human player), and their relationship label toward ${playerName} afterwards
+` : ""}- outcomes: for EACH of ${names.join(", ")}: a one-sentence first-person memory of this chat, and their mood afterwards
 - pairs: for EACH pair (${pairs.map((p) => `${p.a.name}+${p.b.name}`).join(", ")}): affinity_delta (-15..15) for how this chat changed their feelings, and their relationship label afterwards`;
 }
 
 function cleanOutcome(o: Outcome, names: string[], pairs: PairInfo[]): Outcome {
+  const cleanBonds = (o.player_bonds ?? [])
+    .filter((b) => names.includes(b.name))
+    .map((b) => ({
+      name: b.name,
+      affinity_delta: Math.max(-15, Math.min(15, Math.round(Number(b.affinity_delta) || 0))),
+      relationship: REL_LABELS.includes(b.relationship) ? b.relationship : "acquaintance" as RelLabel,
+    }));
   return {
+    ...(o.player_bonds ? { player_bonds: cleanBonds } : {}),
     outcomes: (o.outcomes ?? [])
       .filter((x) => names.includes(x.name))
       .map((x) => ({ ...x, mood: MOODS.includes(x.mood) ? x.mood : "neutral" })),
@@ -170,9 +199,13 @@ ${turnsLeft <= 2 ? "The conversation is winding down; wrap up naturally.\n" : ""
 }
 
 // After a conversation, one call reads the transcript and decides memories, moods and affinity.
-export async function summarizeConversation(members: Character[], pairs: PairInfo[], lines: Line[], place: string): Promise<Outcome> {
+export async function summarizeConversation(members: Character[], pairs: PairInfo[], lines: Line[], place: string, playerName?: string): Promise<Outcome> {
   const names = members.map((c) => c.name);
-  const schema = { type: "object", properties: outcomeSchema(names, pairs), required: ["outcomes", "pairs"] };
+  const schema = {
+    type: "object",
+    properties: outcomeSchema(names, pairs, playerName),
+    required: playerName ? ["player_bonds", "outcomes", "pairs"] : ["outcomes", "pairs"],
+  };
   const prompt = `This conversation just happened at ${place} on a tiny island.
 
 ${members.map(describe).join("\n\n")}
@@ -184,7 +217,7 @@ Transcript:
 ${transcript(lines)}
 
 Decide:
-${outcomeInstructions(names, pairs)}`;
+${outcomeInstructions(names, pairs, playerName)}`;
   return cleanOutcome(await callJson<Outcome>(prompt, schema), names, pairs);
 }
 
