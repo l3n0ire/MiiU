@@ -3,6 +3,7 @@
 // app.js uses instead of opening a WebSocket. The visitor's model settings and island
 // save stay on this device; an OpenAI key, if used, is sent only to OpenAI.
 import { createLLM, type LLMConfig } from "../server/llm.ts";
+import { describeSetup } from "./setup-label.ts";
 import { Sim } from "../server/sim.ts";
 import {
   LANDMARKS, MAP_H, MAP_W, migrateWorld, newCharacter, seedWorld,
@@ -149,6 +150,19 @@ function readyToStart(s: SavedSetup | null): boolean {
   return true;
 }
 
+// Issue #27: the gear names the actually-running provider and model. Saved setup
+// is the truth (Start reloads the page); nothing valid saved = not connected.
+function gearLabel(): string {
+  const setup = savedSetup();
+  return `\u2699 Model & save - ${describeSetup(setup, readyToStart(setup))}`;
+}
+
+// First Start does not reload the page, so the label must be refreshed in place.
+function refreshGearLabel() {
+  const gear = document.getElementById("miiuGear");
+  if (gear) gear.textContent = gearLabel();
+}
+
 function showSetup(onStart: () => void) {
   const existing = savedSetup();
   const overlay = el("div", { id: "miiuSetup" });
@@ -167,6 +181,7 @@ function showSetup(onStart: () => void) {
       <h2 style="margin:0 0 4px;font-size:18px">Your island, your model</h2>
       <button type="button" id="miiuClose" aria-label="Close setup" style="background:none;border:none;font-size:18px;cursor:pointer;color:#8a8278;padding:0 0 0 12px;line-height:1">✕</button>
     </div>
+    <p id="miiuCurrent" style="margin:0 0 10px;font-size:13px;color:#8a8278"></p>
     <p style="margin:0 0 14px;color:#8a8278">This island lives in this browser only - it pauses when you close the tab,
     and its save stays on this device. Conversations are written by a model <b>you</b> connect.</p>
     <div style="display:flex;gap:8px;margin-bottom:12px">
@@ -227,6 +242,8 @@ function showSetup(onStart: () => void) {
   const hasKey = Boolean(storedKey());
   if (hasKey) $("#miiuKey").value = "••••••••••••"; // hint a key is remembered; never echo it
   $("#miiuRemember").checked = Boolean(existing?.rememberKey && hasKey); // reflect current state; unchecking + Start forgets
+  // Active configuration only: switching the draft provider tab must not change it.
+  $("#miiuCurrent").textContent = `Currently using: ${describeSetup(existing, readyToStart(existing))}`;
   paint();
 
   const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
@@ -269,6 +286,7 @@ function showSetup(onStart: () => void) {
     }
     localStorage.setItem(SETUP_KEY, JSON.stringify(setup));
     close();
+    refreshGearLabel();
     onStart();
   };
 
@@ -311,7 +329,8 @@ function showSetup(onStart: () => void) {
 // ---- boot ----
 function boot() {
   // Gear button reopens setup (change model, export/import, reset).
-  const gear = el("button", { id: "miiuGear", type: "button" }, "⚙ Model &amp; save");
+  const gear = el("button", { id: "miiuGear", type: "button" });
+  gear.textContent = gearLabel();
   gear.addEventListener("click", () => showSetup(() => location.reload()));
   document.querySelector("header")?.appendChild(gear);
 

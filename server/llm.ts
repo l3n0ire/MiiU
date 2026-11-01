@@ -54,13 +54,20 @@ export interface LLM {
   generateResident(spawner: Character, chars: Character[]): Promise<NewResident>;
 }
 
+// Default model per provider, shared by the server defaults and the browser
+// app's provider indicator (issue #27) so the two never drift.
+export const DEFAULT_MODEL: Record<LLMConfig["provider"], string> = {
+  openai: "gpt-6-luna",
+  ollama: "gemma4-pi",
+};
+
 export function createLLM(config: LLMConfig): LLM {
   const PROVIDER = config.provider;
   const OLLAMA_URL = config.ollamaUrl ?? "http://localhost:11434";
   const OPENAI_URL = config.openaiBaseUrl ?? "https://api.openai.com/v1";
   const OPENAI_REASONING = config.openaiReasoning;
   const OPENAI_API_KEY = config.openaiApiKey;
-  const MODEL = config.model ?? (PROVIDER === "openai" ? "gpt-6-luna" : "gemma4-pi");
+  const MODEL = config.model ?? DEFAULT_MODEL[PROVIDER];
 
   if (PROVIDER === "openai" && !OPENAI_API_KEY) {
     throw new Error("provider is openai but no API key was provided");
