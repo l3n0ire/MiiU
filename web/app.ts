@@ -219,7 +219,9 @@ function showSetup(onStart: () => void) {
   if (existing?.model) $("#miiuModel").value = existing.model;
   if (existing?.ollamaUrl) $("#miiuOllamaUrl").value = existing.ollamaUrl;
   if (existing?.openaiReasoning) { /* kept in setup record; no UI field yet */ }
-  if (storedKey()) $("#miiuKey").value = "••••••••••••"; // hint a key is remembered; never echo it
+  const hasKey = Boolean(storedKey());
+  if (hasKey) $("#miiuKey").value = "••••••••••••"; // hint a key is remembered; never echo it
+  $("#miiuRemember").checked = Boolean(existing?.rememberKey && hasKey); // reflect current state; unchecking + Start forgets
   paint();
 
   $("#miiuTestOllama").onclick = async () => {
@@ -276,8 +278,8 @@ function showSetup(onStart: () => void) {
       try {
         const text = await input.files?.[0]?.text();
         if (!text) return;
-        migrateWorld(JSON.parse(text) as World); // validate before saving
-        localStorage.setItem(WORLD_KEY, text);
+        const world = migrateWorld(JSON.parse(text) as World); // validate + sanitize before saving
+        localStorage.setItem(WORLD_KEY, JSON.stringify(world));
         location.reload();
       } catch {
         $("#miiuSetupError").textContent = "That file is not a valid MiiU island export.";
@@ -286,8 +288,10 @@ function showSetup(onStart: () => void) {
     input.click();
   };
   $("#miiuReset").onclick = () => {
-    if (confirm("Erase the island saved on this device and start over?")) {
+    if (confirm("Erase everything saved on this device - the island, your model settings, and any remembered key?")) {
       localStorage.removeItem(WORLD_KEY);
+      localStorage.removeItem(SETUP_KEY);
+      localStorage.removeItem(KEY_KEY);
       location.reload();
     }
   };

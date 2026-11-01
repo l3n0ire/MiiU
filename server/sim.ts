@@ -90,6 +90,12 @@ interface ActiveChat {
   outcome: Outcome | null;
 }
 
+// Never persist or print provider error bodies verbatim: they can echo a rejected
+// credential fragment (OpenAI 401s include a truncated key). Generic text in the island
+// record; scrubbed + bounded text in console output.
+const scrubErr = (err: unknown): string =>
+  String((err as Error)?.message ?? err).replace(/sk-[A-Za-z0-9_-]{2,}/g, "sk-...").slice(0, 200);
+
 export class Sim {
   now = 0;
   paused = false;
@@ -191,8 +197,8 @@ export class Sim {
       this.log({ kind: "world", participants: targets.map((c) => c.id), place: landmark?.name, text: `📣 ${headline}`, lines });
       this.persist();
     } catch (err) {
-      console.error("LLM error:", err);
-      this.log({ kind: "system", participants: [], text: `📣 ${headline} (nobody reacted: ${(err as Error).message})` });
+      console.error("LLM error:", scrubErr(err));
+      this.log({ kind: "system", participants: [], text: `📣 ${headline} (nobody reacted: the island's model had a problem)` });
     } finally {
       this.eventBusy = false;
     }
@@ -276,7 +282,7 @@ export class Sim {
         }
       })
       .catch((err) => {
-        console.error("LLM error (user chat):", err);
+        console.error("LLM error (user chat):", scrubErr(err));
         chat.lines.push({ speaker: "", text: `${speaker.name} couldn't think of anything to say (LLM error).` });
       })
       .finally(() => {
@@ -341,7 +347,7 @@ export class Sim {
         this.maybeAutoEvent(); // user chats are completed conversations too (issue #2)
         this.maybePlayerSpawn(chat);
       })
-      .catch((err) => console.error("LLM error (user chat summary):", err))
+      .catch((err) => console.error("LLM error (user chat summary):", scrubErr(err)))
       .finally(() => { chat.summarizing = false; finish(); });
   }
 
@@ -468,7 +474,7 @@ export class Sim {
       this.llm.summarizeConversation(chat.members, chat.pairs, chat.lines, chat.place)
         .then((o) => { chat.outcome = o; })
         .catch((err) => {
-          console.error("LLM error (summary):", err);
+          console.error("LLM error (summary):", scrubErr(err));
           chat.outcome = { outcomes: [], pairs: [] };
         })
         .finally(() => { chat.generating = false; });
@@ -487,7 +493,7 @@ export class Sim {
         if (chat.lines.length >= MAX_TURNS || chat.present.length < 2) chat.finished = true;
       })
       .catch((err) => {
-        if (chat.lines.length >= 2) { console.error("LLM error (line):", err); chat.finished = true; }
+        if (chat.lines.length >= 2) { console.error("LLM error (line):", scrubErr(err)); chat.finished = true; }
         else this.failChat(chat, err);
       })
       .finally(() => { chat.generating = false; });
@@ -574,7 +580,7 @@ export class Sim {
         this.log({ kind: "system", participants: [], text: `🎲 The island stirs...` });
         void this.triggerEvent(ev.headline, target?.id ?? null, ev.gather === "nowhere" ? null : ev.gather);
       })
-      .catch((err) => console.error("LLM error (auto event):", err));
+      .catch((err) => console.error("LLM error (auto event):", scrubErr(err)));
   }
 
   // A mii whose bond with the player is strong enough can invite someone from off-island (issue #13).
@@ -601,7 +607,7 @@ export class Sim {
         this.persist();
         void this.triggerEvent(`${c.name} arrived on the island, invited by ${inviter.name} because of you!`, null, null);
       })
-      .catch((err) => console.error("LLM error (player spawn):", err));
+      .catch((err) => console.error("LLM error (player spawn):", scrubErr(err)));
   }
 
   private maybeSpawn(pairs: PairInfo[]) {
@@ -623,12 +629,12 @@ export class Sim {
         this.persist();
         void this.triggerEvent(`${c.name} arrived on the island, brought by ${bond.a.name}!`, null, null);
       })
-      .catch((err) => console.error("LLM error (spawn):", err));
+      .catch((err) => console.error("LLM error (spawn):", scrubErr(err)));
   }
 
   private failChat(chat: ActiveChat, err: Error) {
-    console.error("LLM error:", err);
-    this.log({ kind: "system", participants: chat.members.map((c) => c.id), text: `${listNames(chat.members)} stared at each other awkwardly (LLM error: ${err.message})` });
+    console.error("LLM error:", scrubErr(err));
+    this.log({ kind: "system", participants: chat.members.map((c) => c.id), text: `${listNames(chat.members)} stared at each other awkwardly (the island's model had a problem)` });
     for (const p of chat.pairs) p.rel.lastTalk = this.now;
     this.endChat(chat);
   }
