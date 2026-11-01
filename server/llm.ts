@@ -47,7 +47,7 @@ export interface NewResident {
 
 export interface LLM {
   model: string;
-  generateLine(speaker: Character, others: Character[], pairs: PairInfo[], lines: Line[], place: string, turnsLeft: number, canLeave: boolean): Promise<{ says: string; wants_to_leave: boolean }>;
+  generateLine(speaker: Character, others: Character[], pairs: PairInfo[], lines: Line[], place: string, turnsLeft: number, canLeave: boolean, recentActivity?: string[]): Promise<{ says: string; wants_to_leave: boolean }>;
   summarizeConversation(members: Character[], pairs: PairInfo[], lines: Line[], place: string, playerName?: string): Promise<Outcome>;
   generateReactions(event: string, chars: Character[]): Promise<Reaction[]>;
   generateEvent(recentChats: { place: string; lines: Line[] }[], chars: Character[], landmarks: string[]): Promise<IslandEvent>;
@@ -204,6 +204,7 @@ ${mem}`;
     place: string,
     turnsLeft: number,
     canLeave: boolean,
+    recentActivity: string[] = [],
   ): Promise<{ says: string; wants_to_leave: boolean }> {
     const otherNames = others.map((o) => o.name);
     const older = speaker.memories.slice(0, -5).filter((m) => otherNames.some((n) => m.includes(n)));
@@ -234,13 +235,16 @@ ${speaker.facts.length ? speaker.facts.map((f) => `  - ${f}`).join("\n") : "  (n
 You are at ${place}, talking with:
 ${feelings}
 
+Recent island activity - already covered, so build on it or open a fresh angle instead of restarting it:
+${recentActivity.slice(-4).length ? recentActivity.slice(-4).map((a) => `  - ${a}`).join("\n") : "  (nothing yet)"}
+
 Conversation so far:
 ${lines.length ? transcript(lines) : "(nobody has spoken yet — you start the conversation)"}
 
 Write ONLY your next line as ${speaker.name} (max ~20 words). React to what was just said.
 Do not repeat or paraphrase earlier lines. Do not write lines for anyone else.
 When you know an answer from your facts or memories, answer from them.
-Avoid rehashing the same small talk as your recent memories; move the conversation somewhere new.
+Avoid rehashing small talk from your recent memories or the recent activity above; move the conversation somewhere new.
 ${turnsLeft <= 2 ? "The conversation is winding down; wrap up naturally.\n" : ""}${
       canLeave
         ? `Set wants_to_leave to true if ${speaker.name} would end the conversation or walk away now.`
