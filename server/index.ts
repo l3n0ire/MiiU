@@ -49,6 +49,13 @@ wss.on("connection", (ws) => {
       case "pause": sim.paused = !sim.paused; break;
       case "speed": sim.speed = Math.max(0.25, Math.min(4, Number(msg.value) || 1)); break;
       case "talk": sim.forceTalk(msg.a, msg.b); break;
+      case "chatStart": {
+        const ids = Array.isArray(msg.ids) ? msg.ids.map(String).slice(0, 4) : [];
+        if (ids.length) sim.startUserChat(ids);
+        break;
+      }
+      case "chatSend": sim.userChatMessage(String(msg.text ?? "")); break;
+      case "chatEnd": sim.endUserChat(); break;
       case "event": {
         const text = String(msg.text ?? "").trim().slice(0, 200);
         if (text) sim.triggerEvent(text, msg.target || null, msg.gather || null);

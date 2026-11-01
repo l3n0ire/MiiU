@@ -26,6 +26,7 @@ npm start
 - `server/sim.ts`: ticks 5x/sec. Characters walk between landmarks; when two meet (and haven't talked in the last minute), anyone standing nearby joins in (up to 4). Up to 3 conversations run at once (`MIIU_MAX_CHATS`).
 - **Conversations**: one LLM call per line, from the speaker's point of view. They see only their own personality, memories and feelings toward the others, plus the transcript so far, and can walk away. Max 8 lines, then a summary call decides each character's memory and mood and each pair's affinity change.
 - **World events**: the "Make something happen" panel announces news to everyone (or one character), optionally gathers them at a landmark. Each character reacts and remembers it, so it comes up in later conversations.
+- **Chat with a mii**: click a resident (or pick up to 4 in the "Chat with a mii" panel) to talk to them yourself. Miis reply in character, remember the conversation, and it nudges their moods and relationships, just like their own chats.
 - `server/llm.ts`: prompts + structured-output JSON schemas, sent to Ollama or OpenAI.
 - `server/world.ts`: types, map, seed characters. State persists to `world.json` (delete it to reset).
 - `public/`: canvas map, speech bubbles, news feed, force-directed relationship graph, character panel.

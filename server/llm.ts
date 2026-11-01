@@ -13,6 +13,19 @@ if (PROVIDER === "openai" && !process.env.OPENAI_API_KEY) {
 
 export type Line = { speaker: string; text: string };
 
+export const USER_ID = "__user__";
+
+// A stand-in Character for the human player so they can appear in prompts and transcripts.
+export function asUser(name = "You"): Character {
+  return {
+    id: USER_ID, name,
+    personality: "The human player visiting the island",
+    likes: "", dislikes: "", color: "#888888",
+    pos: { x: 0, y: 0 }, target: { x: 0, y: 0 },
+    state: "idle", idleUntil: 0, mood: "neutral", memories: [], bubble: null,
+  };
+}
+
 export interface Outcome {
   outcomes: { name: string; memory: string; mood: Mood }[];
   pairs: { a: string; b: string; affinity_delta: number; relationship: RelLabel }[];
@@ -108,6 +121,7 @@ export async function generateLine(
   const memories = [...older, ...speaker.memories.slice(-5)];
   const feelings = others
     .map((o) => {
+      if (o.id === USER_ID) return `- ${o.name}: the human player visiting the island - talk to them like a friendly neighbor`;
       const rel = pairs.find((p) => (p.a === speaker && p.b === o) || (p.b === speaker && p.a === o))?.rel;
       return !rel || (rel.label === "stranger" && !rel.history.length)
         ? `- ${o.name}: you don't really know them yet`

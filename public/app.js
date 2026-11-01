@@ -35,6 +35,7 @@ function connect() {
       $("eventBtn").disabled = msg.status.startsWith("📣");
       renderTargets();
       renderDetail();
+      renderChat();
     } else if (msg.type === "event") {
       addEvent(msg.event);
     }
@@ -251,6 +252,7 @@ function renderDetail() {
       <select id="talkTo">${others.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join("")}</select>
       <button id="talkBtn" style="flex:none">Make talk</button>
     </div>
+    <button id="chatWithBtn" style="margin-top:4px">Chat with ${esc(c.name)}</button>
     <button id="delBtn" style="margin-top:4px">Move out</button>`;
   if (html === lastDetail) return; // don't clobber the dropdown while the user is using it
   const keep = $("talkTo")?.value;
@@ -258,6 +260,7 @@ function renderDetail() {
   lastDetail = html;
   if (keep && others.some((o) => o.id === keep)) $("talkTo").value = keep;
   $("talkBtn").onclick = () => sendMsg({ type: "talk", a: c.id, b: $("talkTo").value });
+  $("chatWithBtn").onclick = () => sendMsg({ type: "chatStart", ids: [c.id] });
   $("delBtn").onclick = () => { if (confirm(`Move ${c.name} off the island?`)) { sendMsg({ type: "delete", id: c.id }); selectedId = null; } };
 }
 
@@ -306,6 +309,43 @@ $("event").addEventListener("submit", (e) => {
   sendMsg({ type: "event", ...Object.fromEntries(new FormData(e.target)) });
   e.target.text.value = "";
 });
+// ---------- chat with miis ----------
+let lastChatKey = "";
+function renderChat() {
+  const uc = state.userChat;
+  $("chatSetup").style.display = uc ? "none" : "";
+  $("chatUI").style.display = uc ? "" : "none";
+  if (uc) {
+    const html = uc.lines.map((l) => !l.speaker
+      ? `<div class="msg system">${esc(l.text)}</div>`
+      : `<div class="msg${l.speaker === uc.userName ? " you" : ""}"><span class="who">${esc(l.speaker)}</span>${esc(l.text)}</div>`
+    ).join("") + (uc.thinking ? `<div class="msg system">typing…</div>` : "");
+    if (html !== lastChatKey) {
+      lastChatKey = html;
+      $("chatLog").innerHTML = html;
+      $("chatLog").scrollTop = $("chatLog").scrollHeight;
+    }
+    $("chatHint").textContent = `With ${uc.members.map((m) => m.name).join(", ")} at ${uc.place}`;
+  } else {
+    lastChatKey = "";
+    const html = state.characters.map((c) =>
+      `<label class="chip" style="cursor:pointer"><input type="checkbox" value="${c.id}" style="width:auto;margin:0 4px 0 0" />${esc(c.name)}</label>`
+    ).join("");
+    if ($("chatPick").innerHTML !== html) $("chatPick").innerHTML = html;
+  }
+}
+$("chatStartBtn").onclick = () => {
+  const ids = [...$("chatPick").querySelectorAll("input:checked")].map((i) => i.value);
+  if (ids.length) sendMsg({ type: "chatStart", ids });
+};
+$("chatForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const input = e.target.text;
+  if (input.value.trim()) sendMsg({ type: "chatSend", text: input.value });
+  input.value = "";
+});
+$("chatEndBtn").onclick = () => sendMsg({ type: "chatEnd" });
+
 $("pause").onclick = () => sendMsg({ type: "pause" });
 $("speed").oninput = (e) => sendMsg({ type: "speed", value: e.target.value });
 

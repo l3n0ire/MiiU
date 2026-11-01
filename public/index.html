@@ -32,6 +32,13 @@
     #presets button { font-size: 12px; padding: 3px 8px; margin: 0 4px 6px 0; }
     .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--line); margin: 2px 4px 2px 0; }
     #detail ul { margin: 4px 0; padding-left: 18px; }
+    #chatLog { max-height: 300px; overflow-y: auto; margin-bottom: 8px; }
+    .msg { margin: 6px 0; padding: 6px 10px; border-radius: 12px; background: #f0ead9; max-width: 92%; }
+    .msg .who { font-weight: 600; font-size: 12px; color: var(--muted); display: block; margin-bottom: 1px; }
+    .msg.you { background: var(--accent); color: #fff; margin-left: auto; }
+    .msg.you .who { color: rgba(255,255,255,.8); }
+    .msg.system { background: transparent; color: var(--muted); font-style: italic; padding: 2px 4px; font-size: 12px; }
+    #chatHint { color: var(--muted); font-size: 12px; margin-top: 6px; }
     .empty { color: var(--muted); }
   </style>
 </head>
@@ -49,6 +56,24 @@
     </section>
     <aside>
       <div class="panel" id="detail"><h2>Resident</h2><p class="empty">Click someone on the map.</p></div>
+      <div class="panel" id="chat">
+        <h2>Chat with a mii</h2>
+        <div id="chatSetup">
+          <div id="chatPick" style="margin-bottom:6px"></div>
+          <button class="primary" id="chatStartBtn">Start chat</button>
+        </div>
+        <div id="chatUI" style="display:none">
+          <div id="chatLog"></div>
+          <form id="chatForm" class="row">
+            <input name="text" placeholder="Say something…" autocomplete="off" maxlength="500" />
+            <button class="primary" type="submit" style="flex:none">Send</button>
+          </form>
+          <div class="row" style="justify-content:space-between;margin-top:6px">
+            <span id="chatHint"></span>
+            <button type="button" id="chatEndBtn">End chat</button>
+          </div>
+        </div>
+      </div>
       <div class="panel"><h2>Relationships</h2><canvas id="graph"></canvas></div>
       <div class="panel">
         <h2>Make something happen</h2>
