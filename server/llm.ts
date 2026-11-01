@@ -277,6 +277,52 @@ Decide:
   };
 }
 
+export interface NewResident {
+  name: string; personality: string; likes: string; dislikes: string; color: string; relationship: RelLabel;
+}
+
+// Create a newcomer connected to an existing resident (issue #4):
+// identity and starting relationship shaped by the spawner's context.
+export async function generateResident(spawner: Character, chars: Character[]): Promise<NewResident> {
+  const taken = chars.map((c) => c.name);
+  const schema = {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      personality: { type: "string" },
+      likes: { type: "string" },
+      dislikes: { type: "string" },
+      color: { type: "string" },
+      relationship: { type: "string", enum: REL_LABELS },
+    },
+    required: ["name", "personality", "likes", "dislikes", "color", "relationship"],
+  };
+  const prompt = `${describe(spawner)}
+
+${spawner.name} is bringing someone new to their tiny island - a relative, an old friend moving in, a kid, or a rival from back home. Invent that newcomer so they fit ${spawner.name}'s story and memories.
+
+Existing resident names (do NOT reuse): ${taken.join(", ")}
+
+Decide:
+- name: a short first name, not in the existing list
+- personality: one sentence, max 200 chars
+- likes / dislikes: a few words each
+- color: a hex color like #a1b2c3
+- relationship: how the newcomer starts out feeling toward ${spawner.name}`;
+  const r = await callJson<NewResident>(prompt, schema);
+  let name = String(r.name ?? "").trim().slice(0, 20);
+  if (!name || taken.includes(name)) name = `${name || "Newcomer"} Jr`;
+  return {
+    name,
+    personality: String(r.personality ?? "").slice(0, 300),
+    likes: String(r.likes ?? "").slice(0, 100),
+    dislikes: String(r.dislikes ?? "").slice(0, 100),
+    color: /^#[0-9a-f]{6}$/i.test(r.color) ? r.color : "#888888",
+    relationship: REL_LABELS.includes(r.relationship) ? r.relationship : "acquaintance",
+  };
+}
+
+
 async function callJson<T>(prompt: string, schema: object): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     const content = PROVIDER === "openai" ? await callOpenAI(prompt, schema) : await callOllama(prompt, schema);
