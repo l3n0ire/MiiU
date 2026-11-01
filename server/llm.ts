@@ -378,8 +378,14 @@ For EACH resident (${names.join(", ")}) give:
     const history = recentChats
       .map((ch) => `At ${ch.place}:\n${ch.lines.slice(-8).map((l) => `${l.speaker}: ${l.text}`).join("\n")}`)
       .join("\n\n");
+    // Island news is public: never prompt it with ledger-private memories (tell
+    // records and private-chat summaries stay out of the event generator too).
+    const pubMem = (c: Character) => c.memories.filter((m) => !m.startsWith("(private)") && !m.startsWith("(secret)"));
     const residents = chars
-      .map((c) => `- ${c.name} (${c.mood})${c.memories.length ? `: last memory "${c.memories[c.memories.length - 1]}"` : ""}`)
+      .map((c) => {
+        const mem = pubMem(c);
+        return `- ${c.name} (${c.mood})${mem.length ? `: last memory "${mem[mem.length - 1]}"` : ""}`;
+      })
       .join("\n");
     const prompt = `On a tiny island, these conversations just happened:
 
@@ -518,4 +524,4 @@ function toStrictSchema(node: unknown): unknown {
     out.required = Object.keys(out.properties as object);
   }
   return out;
-                            }
+}
