@@ -30,6 +30,7 @@ export interface Character {
   mood: Mood;
   occupation: string; // job role (issue #6); workplace biases wandering
   memories: string[];
+  facts: string[]; // durable specifics worth permanent retention (issue #23); capped at 50 on write
   bubble: string | null;
   bubbleUntil?: number;
 }
@@ -123,6 +124,7 @@ export function newCharacter(input: Pick<Character, "name" | "personality" | "li
     idleUntil: 0,
     mood: "neutral",
     memories: [],
+    facts: [],
     bubble: null,
   };
 }
@@ -196,6 +198,7 @@ export function migrateWorld(w: World): World {
       mood,
       occupation: cleanStr(c.occupation, 80) || randomOccupation(),
       memories: (Array.isArray(c.memories) ? c.memories : []).slice(-30).map((m) => cleanStr(m)).filter(Boolean),
+      facts: (Array.isArray(c.facts) ? c.facts : []).slice(-50).map((f) => cleanStr(f, 200)).filter(Boolean),
       bubble: null,
     });
     ids.add(id);
