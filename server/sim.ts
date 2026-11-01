@@ -1,5 +1,5 @@
 import {
-  generateLine, generateReactions, summarizeConversation,
+  asUser, generateLine, generateReactions, summarizeConversation,
   type Line, type Outcome, type PairInfo,
 } from "./llm.ts";
 import {
@@ -17,6 +17,19 @@ const MAX_GROUP = 4;
 const MAX_CHATS = Number(process.env.MIIU_MAX_CHATS ?? 3);
 const MAX_TURNS = 8; // hard cap on lines per conversation
 const MIN_LINES_BEFORE_LEAVING = 2; // nobody walks off before this many lines have been said
+
+interface UserChat {
+  userName: string;
+  members: Character[]; // miis still in the chat
+  allMembers: Character[]; // every mii who joined (for the summary)
+  pairs: PairInfo[]; // mii-mii pairs only
+  place: string;
+  lines: Line[]; // user lines have speaker = userName; speaker "" = system note
+  replyQueue: Character[]; // miis who owe a reply
+  generating: boolean;
+  ended: boolean;
+  summarizing: boolean;
+}
 
 interface ActiveChat {
   members: Character[];
@@ -37,6 +50,7 @@ export class Sim {
   paused = false;
   speed = 1;
   private chats: ActiveChat[] = [];
+  private userChat: UserChat | null = null;
   private forced = new Set<string>();
   private eventBusy = false;
 
@@ -62,6 +76,7 @@ export class Sim {
 
   removeCharacter(id: string) {
     if (this.chats.some((ch) => ch.members.some((m) => m.id === id))) return;
+    if (this.userChat?.allMembers.some((m) => m.id === id)) return;
     this.world.characters = this.world.characters.filter((c) => c.id !== id);
     for (const k of Object.keys(this.world.relationships)) if (k.split("|").includes(id)) delete this.world.relationships[k];
     saveWorld(this.world);
@@ -111,6 +126,130 @@ export class Sim {
     } finally {
       this.eventBusy = false;
     }
+  }
+
+  // ---------- user chat (issue #1: chat directly with one or more miis) ----------
+
+  startUserChat(ids: string[], userName = "You") {
+    if (this.userChat && !this.userChat.ended) return;
+    const seen = new Set<string>();
+    const members = ids
+      .map((id) => this.byId(id))
+      .filter((c): c is Character => !!c && c.state !== "talking" && !seen.has(c.id) && !!seen.add(c.id))
+      .slice(0, 4);
+    if (!members.length) {
+      this.log({ kind: "system", participants: [], text: `${userName} tried to start a chat, but nobody was free.` });
+      return;
+    }
+    const chat: UserChat = {
+      userName,
+      members: [...members],
+      allMembers: [...members],
+      pairs: this.pairsOf(members),
+      place: placeName(members[0].pos),
+      lines: [{ speaker: "", text: `${userName} started a chat with ${listNames(members)}.` }],
+      replyQueue: [],
+      generating: false,
+      ended: false,
+      summarizing: false,
+    };
+    for (const c of members) { c.state = "talking"; c.bubble = null; }
+    this.userChat = chat;
+  }
+
+  userChatMessage(text: string) {
+    const chat = this.userChat;
+    if (!chat || chat.ended || chat.summarizing) return;
+    text = text.trim().slice(0, 500);
+    if (!text) return;
+    chat.lines.push({ speaker: chat.userName, text });
+    if (chat.lines.length > 200) chat.lines.splice(0, chat.lines.length - 200);
+
+    // Who answers: anyone named in the message, otherwise the mii silent longest; a second may chime in.
+    const lower = text.toLowerCase();
+    const mentioned = chat.members.filter((m) => lower.includes(m.name.toLowerCase())).slice(0, 2);
+    let responders = mentioned;
+    if (!responders.length) {
+      const lastLine = new Map<string, number>();
+      chat.lines.forEach((l, i) => {
+        const c = chat.members.find((m) => m.name === l.speaker);
+        if (c) lastLine.set(c.id, i);
+      });
+      const sorted = [...chat.members].sort((a, b) => (lastLine.get(a.id) ?? -1) - (lastLine.get(b.id) ?? -1));
+      responders = sorted.slice(0, 1);
+      if (chat.members.length > 1 && Math.random() < 0.4 && sorted[1]) responders.push(sorted[1]);
+    }
+    for (const r of responders) if (!chat.replyQueue.includes(r)) chat.replyQueue.push(r);
+    this.pumpUserChat();
+  }
+
+  private pumpUserChat(): void {
+    const chat = this.userChat;
+    if (!chat || chat.ended || chat.generating || chat.summarizing || !chat.replyQueue.length) return;
+    const speaker = chat.replyQueue.shift()!;
+    if (!chat.members.includes(speaker)) return this.pumpUserChat();
+    chat.generating = true;
+    const others = [...chat.members.filter((c) => c !== speaker), asUser(chat.userName)];
+    const canLeave = chat.lines.some((l) => l.speaker === speaker.name);
+    generateLine(speaker, others, chat.pairs, chat.lines.filter((l) => l.speaker), chat.place, 99, canLeave)
+      .then(({ says, wants_to_leave }) => {
+        chat.lines.push({ speaker: speaker.name, text: says });
+        speaker.bubble = says;
+        speaker.bubbleUntil = this.now + 5000;
+        if (wants_to_leave && canLeave) {
+          chat.members = chat.members.filter((c) => c !== speaker);
+          chat.lines.push({ speaker: "", text: `${speaker.name} headed off.` });
+          speaker.state = "idle";
+          speaker.idleUntil = Math.max(speaker.idleUntil, this.now + 1500);
+          if (!chat.members.length) return this.endUserChat();
+        }
+      })
+      .catch((err) => {
+        console.error("LLM error (user chat):", err);
+        chat.lines.push({ speaker: "", text: `${speaker.name} couldn't think of anything to say (LLM error).` });
+      })
+      .finally(() => {
+        chat.generating = false;
+        this.pumpUserChat();
+      });
+  }
+
+  endUserChat() {
+    const chat = this.userChat;
+    if (!chat || chat.ended || chat.summarizing) return;
+    chat.ended = true;
+    chat.replyQueue = [];
+    const finish = () => {
+      for (const c of chat.allMembers) {
+        if (c.state === "talking") { c.state = "idle"; c.idleUntil = Math.max(c.idleUntil, this.now + 1500); }
+      }
+    };
+    const spoken = chat.lines.filter((l) => l.speaker);
+    if (spoken.length < 2 || !chat.allMembers.length) { finish(); return; }
+    chat.summarizing = true;
+    summarizeConversation(chat.allMembers, chat.pairs, spoken, chat.place)
+      .then((outcome) => {
+        const byName = (n: string) => chat.allMembers.find((c) => c.name === n);
+        for (const p of outcome.pairs) {
+          const a = byName(p.a), b = byName(p.b);
+          if (!a || !b) continue;
+          const rel = getRel(this.world, a.id, b.id);
+          rel.affinity = Math.max(-100, Math.min(100, rel.affinity + p.affinity_delta));
+          rel.label = p.relationship;
+          rel.history.push(`Chatting with ${chat.userName} at ${chat.place}: ${outcome.outcomes.find((o) => o.name === a.name)?.memory ?? "a chat"}`);
+          if (rel.history.length > 10) rel.history.shift();
+        }
+        for (const o of outcome.outcomes) {
+          const c = byName(o.name);
+          if (!c) continue;
+          c.mood = o.mood;
+          c.memories.push(`(chatting with ${chat.userName}) ${o.memory}`);
+          if (c.memories.length > 10) c.memories.shift();
+        }
+        saveWorld(this.world);
+      })
+      .catch((err) => console.error("LLM error (user chat summary):", err))
+      .finally(() => { chat.summarizing = false; finish(); });
   }
 
   private byId(id: string) {
@@ -304,6 +443,8 @@ export class Sim {
   }
 
   private status() {
+    if (this.userChat && !this.userChat.ended)
+      return `${this.userChat.userName} is chatting with ${listNames(this.userChat.members) || "everyone"}${this.userChat.generating ? " (typing…)" : ""}`;
     if (this.eventBusy) return "📣 The island is reacting…";
     if (!this.chats.length) return "idle";
     return this.chats
@@ -319,6 +460,16 @@ export class Sim {
       speed: this.speed,
       status: this.status(),
       chats: this.chats.map((ch) => ch.members.map((c) => c.id)),
+      userChat: this.userChat && !this.userChat.ended
+        ? {
+            active: true,
+            userName: this.userChat.userName,
+            members: this.userChat.members.map((c) => ({ id: c.id, name: c.name, color: c.color })),
+            lines: this.userChat.lines,
+            thinking: this.userChat.generating,
+            place: this.userChat.place,
+          }
+        : null,
     };
   }
 }
