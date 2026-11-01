@@ -524,6 +524,7 @@ export class Sim {
         const rel = getRel(this.world, inviter.id, c.id);
         rel.affinity = 30;
         rel.label = r.relationship;
+        recordRelChange(rel, 30, `${c.name} arrived because of ${chat.userName}.`, null);
         rel.history.push(`${c.name} arrived because of ${chat.userName}.`);
         saveWorld(this.world);
         void this.triggerEvent(`${c.name} arrived on the island, invited by ${inviter.name} because of you!`, null, null);
