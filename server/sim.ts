@@ -310,37 +310,7 @@ export class Sim {
     chat.summarizing = true;
     this.llm.summarizeConversation(chat.allMembers, chat.pairs, spoken, chat.place, chat.userName)
       .then((outcome) => {
-        const byName = (n: string) => chat.allMembers.find((c) => c.name === n);
-        // Bonds with the player live in ordinary Relationship records keyed by USER_ID.
-        for (const b of outcome.player_bonds ?? []) {
-          const c = byName(b.name);
-          if (!c) continue;
-          const rel = getRel(this.world, c.id, USER_ID);
-          const before = rel.timeline.length ? rel.label : null;
-          rel.affinity = Math.max(-100, Math.min(100, rel.affinity + b.affinity_delta));
-          rel.label = b.relationship;
-          recordRelChange(rel, b.affinity_delta, `Bond with ${chat.userName} at ${chat.place}`, before);
-          rel.history.push(`Bond with ${chat.userName} at ${chat.place}: ${outcome.outcomes.find((o) => o.name === c.name)?.memory ?? "a chat"}`);
-          if (rel.history.length > 10) rel.history.shift();
-        }
-        for (const p of outcome.pairs) {
-          const a = byName(p.a), b = byName(p.b);
-          if (!a || !b) continue;
-          const rel = getRel(this.world, a.id, b.id);
-          const before = rel.timeline.length ? rel.label : null;
-          rel.affinity = Math.max(-100, Math.min(100, rel.affinity + p.affinity_delta));
-          rel.label = p.relationship;
-          recordRelChange(rel, p.affinity_delta, `Chatting with ${chat.userName} at ${chat.place}`, before);
-          rel.history.push(`Chatting with ${chat.userName} at ${chat.place}: ${outcome.outcomes.find((o) => o.name === a.name)?.memory ?? "a chat"}`);
-          if (rel.history.length > 10) rel.history.shift();
-        }
-        for (const o of outcome.outcomes) {
-          const c = byName(o.name);
-          if (!c) continue;
-          c.mood = o.mood;
-          c.memories.push(`(chatting with ${chat.userName}) ${o.memory}`);
-          if (c.memories.length > 10) c.memories.shift();
-        }
+        applyChatOutcome(this.world, chat.allMembers, outcome, { place: chat.place, userName: chat.userName });
         this.recentChats.push({ place: chat.place, lines: spoken.slice(-8) });
         if (this.recentChats.length > 3) this.recentChats.shift();
         this.persist();
@@ -524,31 +494,8 @@ export class Sim {
 
   private finishChat(chat: ActiveChat, outcome: Outcome) {
     const { members } = chat;
-    const byName = (n: string) => members.find((c) => c.name === n);
-    const changes: string[] = [];
-    for (const p of outcome.pairs) {
-      const a = byName(p.a), b = byName(p.b);
-      if (!a || !b) continue;
-      const rel = getRel(this.world, a.id, b.id);
-      const before = rel.timeline.length ? rel.label : null;
-      rel.affinity = Math.max(-100, Math.min(100, rel.affinity + p.affinity_delta));
-      rel.label = p.relationship;
-      recordRelChange(rel, p.affinity_delta, `Chat at ${chat.place}${members.length > 2 ? " (group chat)" : ""}`, before);
-      const memory = outcome.outcomes.find((o) => o.name === a.name)?.memory;
-      if (memory) {
-        rel.history.push(`At ${chat.place}${members.length > 2 ? " (group chat)" : ""}: ${memory}`);
-        if (rel.history.length > 10) rel.history.shift();
-      }
-      changes.push(`${a.name}–${b.name}: ${rel.label} (${p.affinity_delta >= 0 ? "+" : ""}${p.affinity_delta})`);
-    }
+    const changes = applyChatOutcome(this.world, members, outcome, { place: chat.place });
     for (const p of chat.pairs) p.rel.lastTalk = this.now;
-    for (const o of outcome.outcomes) {
-      const c = byName(o.name);
-      if (!c) continue;
-      c.mood = o.mood;
-      c.memories.push(`(with ${listNames(members.filter((m) => m !== c))}) ${o.memory}`);
-      if (c.memories.length > 10) c.memories.shift();
-    }
 
     this.log({
       kind: "chat",
@@ -678,6 +625,74 @@ export class Sim {
         : null,
     };
   }
+}
+
+const FACTS_CAP = 50; // durable per-resident facts (issue #23); FIFO beyond the cap
+
+// Apply a conversation summary to the world: relationship changes, episodic memories
+// (skipped when the summarizer judged the chat routine), and durable facts. Exported so
+// external eval drivers persist outcomes exactly like the live Sim (issue #23).
+export function applyChatOutcome(
+  world: World,
+  members: Character[],
+  outcome: Outcome,
+  opts: { place: string; userName?: string },
+): string[] {
+  const { place, userName } = opts;
+  const groupNote = members.length > 2 ? " (group chat)" : "";
+  const byName = (n: string) => members.find((c) => c.name === n);
+  const changes: string[] = [];
+
+  // Bonds with the player live in ordinary Relationship records keyed by USER_ID.
+  for (const b of outcome.player_bonds ?? []) {
+    const c = byName(b.name);
+    if (!c) continue;
+    const rel = getRel(world, c.id, USER_ID);
+    const before = rel.timeline.length ? rel.label : null;
+    rel.affinity = Math.max(-100, Math.min(100, rel.affinity + b.affinity_delta));
+    rel.label = b.relationship;
+    recordRelChange(rel, b.affinity_delta, `Bond with ${userName} at ${place}`, before);
+    rel.history.push(`Bond with ${userName} at ${place}: ${outcome.outcomes.find((o) => o.name === c.name)?.memory || "a chat"}`);
+    if (rel.history.length > 10) rel.history.shift();
+  }
+
+  for (const p of outcome.pairs) {
+    const a = byName(p.a), b = byName(p.b);
+    if (!a || !b) continue;
+    const rel = getRel(world, a.id, b.id);
+    const before = rel.timeline.length ? rel.label : null;
+    rel.affinity = Math.max(-100, Math.min(100, rel.affinity + p.affinity_delta));
+    rel.label = p.relationship;
+    const cause = userName ? `Chatting with ${userName} at ${place}` : `Chat at ${place}${groupNote}`;
+    recordRelChange(rel, p.affinity_delta, cause, before);
+    const memory = outcome.outcomes.find((o) => o.name === a.name)?.memory;
+    if (userName) {
+      rel.history.push(`${cause}: ${memory || "a chat"}`);
+      if (rel.history.length > 10) rel.history.shift();
+    } else if (memory) {
+      rel.history.push(`At ${place}${groupNote}: ${memory}`);
+      if (rel.history.length > 10) rel.history.shift();
+    }
+    changes.push(`${a.name}–${b.name}: ${rel.label} (${p.affinity_delta >= 0 ? "+" : ""}${p.affinity_delta})`);
+  }
+
+  for (const o of outcome.outcomes) {
+    const c = byName(o.name);
+    if (!c) continue;
+    c.mood = o.mood;
+    const text = (o.memory ?? "").trim();
+    if (text) {
+      c.memories.push(userName ? `(chatting with ${userName}) ${text}` : `(with ${listNames(members.filter((m) => m !== c))}) ${text}`);
+      if (c.memories.length > 10) c.memories.shift();
+    }
+    for (const f of o.facts ?? []) {
+      const fact = String(f).trim();
+      if (!fact || c.facts.includes(fact)) continue;
+      c.facts.push(fact);
+      if (c.facts.length > FACTS_CAP) c.facts.shift();
+    }
+  }
+  return changes;
 }
 
 // Close bonds reunite sooner; hostile pairs get a longer cooldown (issue #11).

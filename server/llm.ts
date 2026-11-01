@@ -24,12 +24,12 @@ export function asUser(name = "You"): Character {
     occupation: "Visitor",
     likes: "", dislikes: "", color: "#888888",
     pos: { x: 0, y: 0 }, target: { x: 0, y: 0 },
-    state: "idle", idleUntil: 0, mood: "neutral", memories: [], bubble: null,
+    state: "idle", idleUntil: 0, mood: "neutral", memories: [], facts: [], bubble: null,
   };
 }
 
 export interface Outcome {
-  outcomes: { name: string; memory: string; mood: Mood }[];
+  outcomes: { name: string; memory: string; mood: Mood; facts?: string[] }[];
   pairs: { a: string; b: string; affinity_delta: number; relationship: RelLabel }[];
   // Present only for chats the player joined: each member's bond with the player afterwards.
   player_bonds?: { name: string; affinity_delta: number; relationship: RelLabel }[];
@@ -75,11 +75,14 @@ export function createLLM(config: LLMConfig): LLM {
 
   function describe(c: Character) {
     const mem = c.memories.length ? c.memories.slice(-5).map((m) => `  - ${m}`).join("\n") : "  (none yet)";
+    const facts = c.facts.length ? c.facts.map((f) => `  - ${f}`).join("\n") : "  (none yet)";
     return `${c.name}
   Occupation: ${c.occupation}
   Personality: ${c.personality}
   Likes: ${c.likes || "?"} | Dislikes: ${c.dislikes || "?"}
   Current mood: ${c.mood}
+  Long-term facts they know:
+${facts}
   Recent memories:
 ${mem}`;
   }
@@ -112,8 +115,13 @@ ${mem}`;
         maxItems: names.length,
         items: {
           type: "object",
-          properties: { name: { type: "string", enum: names }, memory: { type: "string" }, mood: { type: "string", enum: MOODS } },
-          required: ["name", "memory", "mood"],
+          properties: {
+            name: { type: "string", enum: names },
+            memory: { type: "string" },
+            mood: { type: "string", enum: MOODS },
+            facts: { type: "array", items: { type: "string" } },
+          },
+          required: ["name", "memory", "mood", "facts"],
         },
       },
       pairs: {
@@ -136,7 +144,10 @@ ${mem}`;
 
   function outcomeInstructions(names: string[], pairs: PairInfo[], playerName?: string) {
     return `${playerName ? `- player_bonds: for EACH of ${names.join(", ")}: affinity_delta (-15..15) for how this chat changed their bond with ${playerName} (the human player), and their relationship label toward ${playerName} afterwards
-` : ""}- outcomes: for EACH of ${names.join(", ")}: a one-sentence first-person memory of this chat, and their mood afterwards
+` : ""}- outcomes: for EACH of ${names.join(", ")}:
+    - memory: a one-sentence first-person memory of this chat ONLY if something genuinely memorable happened (news, a revelation, a decision, a conflict, a milestone). For routine small talk, return an empty string.
+    - facts: specific durable facts ${"this resident"} learned in this chat worth keeping forever - especially things someone shared about themselves (birthdays, names, family, pets, preferences, important dates or plans). Keep exact specifics (dates, names, numbers) verbatim. Return [] when nothing durable was shared.
+    - mood: their mood afterwards
 - pairs: for EACH pair (${pairs.map((p) => `${p.a.name}+${p.b.name}`).join(", ")}): affinity_delta (-15..15) for how this chat changed their feelings, and their relationship label afterwards`;
   }
 
@@ -152,7 +163,14 @@ ${mem}`;
       ...(o.player_bonds ? { player_bonds: cleanBonds } : {}),
       outcomes: (o.outcomes ?? [])
         .filter((x) => names.includes(x.name))
-        .map((x) => ({ ...x, mood: MOODS.includes(x.mood) ? x.mood : "neutral" })),
+        .map((x) => ({
+          ...x,
+          mood: MOODS.includes(x.mood) ? x.mood : "neutral",
+          facts: (Array.isArray(x.facts) ? x.facts : [])
+            .slice(0, 5)
+            .map((f) => String(f ?? "").replace(/[\u0000-\u001F\u007F]/g, " ").trim().slice(0, 200))
+            .filter(Boolean),
+        })),
       pairs: (o.pairs ?? [])
         .filter((p) => names.includes(p.a) && names.includes(p.b) && p.a !== p.b)
         .map((p) => ({
@@ -210,6 +228,9 @@ About you:
 Your memories:
 ${memories.length ? memories.map((m) => `  - ${m}`).join("\n") : "  (none yet)"}
 
+Long-term facts you know (newest last; if two conflict, trust the newer one):
+${speaker.facts.length ? speaker.facts.map((f) => `  - ${f}`).join("\n") : "  (none yet)"}
+
 You are at ${place}, talking with:
 ${feelings}
 
@@ -218,6 +239,8 @@ ${lines.length ? transcript(lines) : "(nobody has spoken yet — you start the c
 
 Write ONLY your next line as ${speaker.name} (max ~20 words). React to what was just said.
 Do not repeat or paraphrase earlier lines. Do not write lines for anyone else.
+When you know an answer from your facts or memories, answer from them.
+Avoid rehashing the same small talk as your recent memories; move the conversation somewhere new.
 ${turnsLeft <= 2 ? "The conversation is winding down; wrap up naturally.\n" : ""}${
       canLeave
         ? `Set wants_to_leave to true if ${speaker.name} would end the conversation or walk away now.`
