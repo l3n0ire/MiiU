@@ -180,7 +180,7 @@ function showSetup(onStart: () => void) {
       Either way it is sent only to api.openai.com when your island talks - this site serves static files and never receives it.
       Anyone using this browser profile can use what you store here, so prefer not remembering on shared devices.</p>
       <label style="font-size:13px;color:#8a8278">Model (optional)</label>
-      <input id="miiuModel" type="text" autocomplete="off" placeholder="default: gpt-5-mini" style="width:100%;margin:4px 0" />
+      <input id="miiuModel" type="text" autocomplete="off" placeholder="default: gpt-6-luna" style="width:100%;margin:4px 0" />
     </div>
     <div id="miiuPaneOllama" style="display:none">
       <label style="font-size:13px;color:#8a8278">Ollama URL</label>

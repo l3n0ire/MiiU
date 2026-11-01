@@ -8,7 +8,7 @@ export interface LLMConfig {
   ollamaUrl?: string; // default http://localhost:11434
   openaiBaseUrl?: string; // default https://api.openai.com/v1
   openaiApiKey?: string; // required when provider is "openai"
-  model?: string; // default gemma4-pi (ollama) / gpt-5-mini (openai)
+  model?: string; // default gemma4-pi (ollama) / gpt-6-luna (openai)
   openaiReasoning?: string; // e.g. "minimal"/"low" for faster gpt-5 replies
 }
 
@@ -60,7 +60,7 @@ export function createLLM(config: LLMConfig): LLM {
   const OPENAI_URL = config.openaiBaseUrl ?? "https://api.openai.com/v1";
   const OPENAI_REASONING = config.openaiReasoning;
   const OPENAI_API_KEY = config.openaiApiKey;
-  const MODEL = config.model ?? (PROVIDER === "openai" ? "gpt-5-mini" : "gemma4-pi");
+  const MODEL = config.model ?? (PROVIDER === "openai" ? "gpt-6-luna" : "gemma4-pi");
 
   if (PROVIDER === "openai" && !OPENAI_API_KEY) {
     throw new Error("provider is openai but no API key was provided");

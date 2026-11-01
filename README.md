@@ -19,7 +19,7 @@ cp .env.example .env    # then set MIIU_PROVIDER=openai and OPENAI_API_KEY=sk-..
 npm start
 ```
 
-`npm start` reads `.env` automatically (it's gitignored, so your key stays local). Defaults to `gpt-5-mini`; set `MIIU_MODEL` to use another model.
+`npm start` reads `.env` automatically (it's gitignored, so your key stays local). Defaults to `gpt-6-luna`; set `MIIU_MODEL` to use another model.
 
 
 ## Browser version: your island, your model (issue #19)
