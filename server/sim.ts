@@ -5,7 +5,7 @@ import {
 } from "./llm.ts";
 import {
   LANDMARKS, getRel, newCharacter, placeName, randomWalkable, recordRelChange, relKey, saveWorld, workplaceFor,
-  type Character, type World, type WorldEvent,
+  type Character, type Relationship, type Vec, type World, type WorldEvent,
 } from "./world.ts";
 
 const TICK_MS = 200;
@@ -35,6 +35,19 @@ const SPAWN_LABELS = ["friend", "best friend", "crush", "family"]; // qualifying
 // Player-bond spawning (issue #13): a strong enough bond with the player can also bring a newcomer.
 const PLAYER_SPAWNING = process.env.MIIU_PLAYER_SPAWNING !== "off";
 const MIN_LINES_BEFORE_LEAVING = 2; // nobody walks off before this many lines have been said
+
+// Social wandering (issue #11): memories, moods and typed relationships bias where miis drift.
+const SOCIAL_WANDER = process.env.MIIU_SOCIAL_WANDER !== "off";
+const WANDER_CANDIDATES = 5; // candidate targets scored per pick
+// Strong labels pull toward, mild labels pull gently, hostile labels push away.
+const PULL: Record<string, number> = {
+  crush: 1, "best friend": 1, friend: 0.8, family: 0.9, mentor: 0.6,
+  acquaintance: 0.3, neighbor: 0.3, coworker: 0.3, frenemy: 0.2,
+  rival: -0.8, enemy: -1, ex: -0.7,
+};
+// Good moods seek company; bad moods want space.
+const SOCIAL_MOOD = new Set(["happy", "excited", "love"]);
+const PRIVATE_MOOD = new Set(["sad", "angry"]);
 
 interface UserChat {
   userName: string;
@@ -317,9 +330,9 @@ export class Sim {
         if (this.now >= c.idleUntil) {
           c.state = "wandering";
           const wp = workplaceFor(c.occupation);
-          c.target = wp && Math.random() < 0.5 // residents drift toward work half the time
+          c.target = wp && Math.random() < 0.5 // residents drift toward work half the time (issue #6)
             ? { x: wp.x + Math.random() * wp.w, y: wp.y + Math.random() * wp.h }
-            : randomWalkable();
+            : this.pickWanderTarget(c); // otherwise relationships and mood steer the drift (issue #11)
         }
         continue;
       }
@@ -340,6 +353,34 @@ export class Sim {
     if (this.chats.length < MAX_CHATS) this.findMeeting();
   }
 
+  // Pick the next wander target: a few random candidates, scored by who would be nearby.
+  // Liked miis pull their favorites closer, rivals and exes get space, and mood tilts the
+  // balance between seeking company and wanting solitude.
+  private pickWanderTarget(c: Character): Vec {
+    if (!SOCIAL_WANDER) return randomWalkable();
+    const others = this.world.characters.filter((o) => o !== c && o.state !== "talking");
+    if (!others.length) return randomWalkable();
+    const pulls = others.map((o) => {
+      const rel = this.world.relationships[relKey(c.id, o.id)];
+      let w = rel ? (PULL[rel.label] ?? 0) * (rel.affinity / 100) : 0;
+      if (SOCIAL_MOOD.has(c.mood) && w > 0) w *= 1.5; // fresh from a good chat: seek company
+      if (PRIVATE_MOOD.has(c.mood)) w *= w > 0 ? 0.3 : 1.5; // snubbed: solitude, and extra distance from disliked miis
+      return { o, w };
+    });
+    let best = randomWalkable(), bestScore = -Infinity;
+    for (let i = 0; i < WANDER_CANDIDATES; i++) {
+      const cand = i === 0 ? best : randomWalkable();
+      let score = 0;
+      for (const { o, w } of pulls) {
+        if (!w) continue;
+        const d = Math.hypot(cand.x - o.pos.x, cand.y - o.pos.y);
+        score += (w * 8) / (1 + d / 3); // stronger bonds and closer candidates weigh more
+      }
+      if (score > bestScore) { bestScore = score; best = cand; }
+    }
+    return best;
+  }
+
   private findMeeting() {
     const free = this.world.characters.filter((c) => c.state !== "talking");
     for (let i = 0; i < free.length; i++) {
@@ -348,7 +389,7 @@ export class Sim {
         if (Math.hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y) > MEET_DIST) continue;
         const key = relKey(a.id, b.id);
         const rel = getRel(this.world, a.id, b.id);
-        if (!this.forced.has(key) && rel.lastTalk && this.now - rel.lastTalk < PAIR_COOLDOWN) continue;
+        if (!this.forced.has(key) && rel.lastTalk && this.now - rel.lastTalk < pairCooldown(rel)) continue;
         this.forced.delete(key);
         const center = { x: (a.pos.x + b.pos.x) / 2, y: (a.pos.y + b.pos.y) / 2 };
         const dist = (c: Character) => Math.hypot(c.pos.x - center.x, c.pos.y - center.y);
@@ -600,6 +641,14 @@ export class Sim {
         : null,
     };
   }
+}
+
+// Close bonds reunite sooner; hostile pairs get a longer cooldown (issue #11).
+function pairCooldown(rel: Relationship): number {
+  const pull = PULL[rel.label] ?? 0;
+  if (pull >= 0.8 && rel.affinity >= 50) return PAIR_COOLDOWN * 0.25;
+  if (pull <= -0.7) return PAIR_COOLDOWN * 2.5;
+  return PAIR_COOLDOWN;
 }
 
 function listNames(cs: Character[]) {
