@@ -7,7 +7,7 @@
     "dev": "tsx watch --env-file-if-exists=.env server/index.ts",
     "build:web": "esbuild web/app.ts --bundle --format=iife --target=es2022 --outfile=dist/bundle.js && cp web/index.html dist/index.html && cp public/app.js dist/app.js",
     "start:web": "npm run build:web && npx serve dist",
-    "test": "tsx --test web/setup-label.test.ts server/llm-activity.test.ts"
+    "test": "tsx --test web/setup-label.test.ts server/llm-activity.test.ts server/game.test.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -79,10 +79,51 @@ export const LANDMARKS: Landmark[] = [
   { name: "Apartments", x: 13, y: 10, w: 4, h: 2, color: "#8a8fb5" },
 ];
 
+
+// ---- game layer: festival races, secrets, promises (see server/game.ts) ----
+// All deadlines are on the game clock (game.clockMs), advanced only by the running,
+// unpaused sim - so closed tabs and paused time never count.
+
+export interface Festival {
+  status: "campaigning" | "decided" | "flopped";
+  candidates: string[]; // exactly 2 while campaigning
+  endorsements: Record<string, string>; // voterId -> candidateId (non-candidates only)
+  deadline: number; // game-clock ms
+  winner: string | null;
+  nextAt: number | null; // game-clock ms when the next race is announced
+}
+
+export interface Secret {
+  id: string;
+  subject: string; // resident id the secret is about
+  text: string;
+  knownBy: string[]; // resident ids (may include the player)
+  toldBy: Record<string, string | null>; // knower -> who told them (null = self)
+  exposed: boolean;
+}
+
+export interface Pledge {
+  id: string;
+  promiser: string;
+  promisee: string; // may be the player
+  kind: "keep_secret" | "tell_secret";
+  secret: string; // secret id
+  deadline: number; // game-clock ms
+  status: "active" | "kept" | "broken";
+}
+
+export interface GameState {
+  clockMs: number;
+  festival: Festival | null;
+  secrets: Secret[];
+  pledges: Pledge[];
+}
+
 export interface World {
   characters: Character[];
   relationships: Record<string, Relationship>;
   events: WorldEvent[];
+  game: GameState;
 }
 
 // Persistence hook: the Node server saves to world.json, the browser app to localStorage.
@@ -152,7 +193,7 @@ const SEED = [
 
 // A fresh island with the default residents.
 export function seedWorld(): World {
-  return { characters: SEED.map(newCharacter), relationships: {}, events: [] };
+  return { characters: SEED.map(newCharacter), relationships: {}, events: [], game: { clockMs: 0, festival: null, secrets: [], pledges: [] } };
 }
 
 // Normalize a loaded/deserialized world for a fresh sim session: the sim clock
@@ -176,7 +217,7 @@ const EVENT_KINDS = ["chat", "join", "system", "world"];
 
 export function migrateWorld(w: World): World {
   const src = (w ?? {}) as World;
-  const out: World = { characters: [], relationships: {}, events: [] };
+  const out: World = { characters: [], relationships: {}, events: [], game: { clockMs: 0, festival: null, secrets: [], pledges: [] } };
   const ids = new Set<string>();
   const chars = Array.isArray(src.characters) ? src.characters : [];
   for (const c of chars.slice(0, 40)) {
@@ -234,6 +275,55 @@ export function migrateWorld(w: World): World {
       ...(ev.place ? { place: cleanStr(ev.place, 60) } : {}),
       text: cleanStr(ev.text, 500),
       ...(Array.isArray(ev.lines) ? { lines: ev.lines.slice(0, 50).map((l) => ({ speaker: cleanStr(l?.speaker, 40), text: cleanStr(l?.text) })) } : {}),
+    });
+  }
+
+  // Game state (festival races, secrets, pledges): same untrusted-input rules.
+  // References to unknown residents are dropped; the player id stays valid.
+  const g = (src.game ?? {}) as GameState;
+  const knownId = (x: unknown): x is string => typeof x === "string" && (ids.has(x) || x === PLAYER_ID);
+  out.game.clockMs = Math.max(0, cleanNum(g.clockMs));
+  const gf = (g.festival ?? null) as Festival | null;
+  if (gf && typeof gf === "object") {
+    const status = (["campaigning", "decided", "flopped"] as const).includes(gf.status as never) ? gf.status : "flopped";
+    const candidates = (Array.isArray(gf.candidates) ? gf.candidates : []).filter(knownId).slice(0, 8);
+    const endorsements: Record<string, string> = {};
+    for (const [v, c] of Object.entries(gf.endorsements ?? {})) {
+      // Voters must be known non-candidates (candidates never vote; runtime rule).
+      if (knownId(v) && !candidates.includes(v) && typeof c === "string" && candidates.includes(c)) endorsements[v] = c;
+    }
+    out.game.festival = {
+      status, candidates, endorsements,
+      deadline: cleanNum(gf.deadline),
+      winner: typeof gf.winner === "string" && candidates.includes(gf.winner) ? gf.winner : null,
+      nextAt: typeof gf.nextAt === "number" && Number.isFinite(gf.nextAt) ? gf.nextAt : null,
+    };
+  }
+  const secrets: Secret[] = [];
+  for (const s of (Array.isArray(g.secrets) ? g.secrets : []).slice(0, 80)) {
+    if (!s || typeof s !== "object" || !knownId(s.subject)) continue;
+    const text = cleanStr(s.text, 300);
+    if (!text) continue;
+    const knownBy = (Array.isArray(s.knownBy) ? s.knownBy : []).filter(knownId);
+    if (!knownBy.includes(s.subject)) knownBy.unshift(s.subject);
+    const toldBy: Record<string, string | null> = {};
+    for (const k of knownBy) {
+      const from = (s.toldBy ?? {})[k];
+      toldBy[k] = k === s.subject ? null : knownId(from) ? from : null;
+    }
+    secrets.push({ id: cleanStr(s.id, 60) || `sec${secrets.length + 1}`, subject: s.subject, text, knownBy, toldBy, exposed: s.exposed === true });
+  }
+  out.game.secrets = secrets;
+  const secIds = new Set(secrets.map((s) => s.id));
+  for (const p of (Array.isArray(g.pledges) ? g.pledges : []).slice(0, 100)) {
+    if (!p || typeof p !== "object") continue;
+    if (!knownId(p.promiser) || !knownId(p.promisee) || !secIds.has(p.secret)) continue;
+    if (p.kind !== "keep_secret" && p.kind !== "tell_secret") continue;
+    out.game.pledges.push({
+      id: cleanStr(p.id, 60) || `plg${out.game.pledges.length + 1}`,
+      promiser: p.promiser, promisee: p.promisee, kind: p.kind, secret: p.secret,
+      deadline: cleanNum(p.deadline),
+      status: (["active", "kept", "broken"] as const).includes(p.status as never) ? p.status : "broken",
     });
   }
   return out;

@@ -14,6 +14,13 @@ export interface LLMConfig {
 
 export type Line = { speaker: string; text: string };
 
+// One optional game move attached to a spoken line (see server/game.ts).
+// candidate/to are resident names as spoken; secret is the 1-based index into the
+// speaker's own known-secret list shown in their prompt. Declared here (not in
+// game.ts) because game.ts already imports USER_ID from this module.
+export const LINE_ACTION_KINDS = ["none", "endorse", "switch", "hint", "tell", "expose", "promise_keep", "promise_tell"] as const;
+export interface LineAction { kind: string; candidate: string; secret: number; to: string }
+
 export const USER_ID = "__user__";
 
 // A stand-in Character for the human player so they can appear in prompts and transcripts.
@@ -47,7 +54,7 @@ export interface NewResident {
 
 export interface LLM {
   model: string;
-  generateLine(speaker: Character, others: Character[], pairs: PairInfo[], lines: Line[], place: string, turnsLeft: number, canLeave: boolean, recentActivity?: string[]): Promise<{ says: string; wants_to_leave: boolean }>;
+  generateLine(speaker: Character, others: Character[], pairs: PairInfo[], lines: Line[], place: string, turnsLeft: number, canLeave: boolean, recentActivity?: string[], gameContext?: string): Promise<{ says: string; wants_to_leave: boolean; action: LineAction }>;
   summarizeConversation(members: Character[], pairs: PairInfo[], lines: Line[], place: string, playerName?: string): Promise<Outcome>;
   generateReactions(event: string, chars: Character[]): Promise<Reaction[]>;
   generateEvent(recentChats: { place: string; lines: Line[] }[], chars: Character[], landmarks: string[]): Promise<IslandEvent>;
@@ -205,7 +212,8 @@ ${mem}`;
     turnsLeft: number,
     canLeave: boolean,
     recentActivity: string[] = [],
-  ): Promise<{ says: string; wants_to_leave: boolean }> {
+    gameContext: string = "",
+  ): Promise<{ says: string; wants_to_leave: boolean; action: LineAction }> {
     const otherNames = others.map((o) => o.name);
     const older = speaker.memories.slice(0, -5).filter((m) => otherNames.some((n) => m.includes(n)));
     const memories = [...older, ...speaker.memories.slice(-5)];
@@ -238,7 +246,9 @@ ${feelings}
 Recent island activity (most relevant first) - already covered, so build on it or open a fresh angle instead of restarting it:
 ${recentActivity.slice(0, 4).length ? recentActivity.slice(0, 4).map((a) => `  - ${a}`).join("\n") : "  (nothing yet)"}
 
-Conversation so far:
+${gameContext ? `${gameContext}
+
+` : ""}Conversation so far:
 ${lines.length ? transcript(lines) : "(nobody has spoken yet — you start the conversation)"}
 
 Write ONLY your next line as ${speaker.name} (max ~20 words). React to what was just said.
@@ -253,15 +263,35 @@ ${turnsLeft <= 2 ? "The conversation is winding down; wrap up naturally.\n" : ""
 
     const schema = {
       type: "object",
-      properties: { says: { type: "string" }, wants_to_leave: { type: "boolean" } },
-      required: ["says", "wants_to_leave"],
+      properties: {
+        says: { type: "string" },
+        wants_to_leave: { type: "boolean" },
+        action: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: [...LINE_ACTION_KINDS] },
+            candidate: { type: "string" },
+            secret: { type: "integer" },
+            to: { type: "string" },
+          },
+          required: ["kind", "candidate", "secret", "to"],
+        },
+      },
+      required: ["says", "wants_to_leave", "action"],
     };
-    const out = await callJson<{ says: string; wants_to_leave: boolean }>(prompt, schema);
+    const out = await callJson<{ says: string; wants_to_leave: boolean; action?: Partial<LineAction> }>(prompt, schema);
     let says = String(out.says ?? "").trim();
     const prefix = `${speaker.name.toLowerCase()}:`;
     if (says.toLowerCase().startsWith(prefix)) says = says.slice(prefix.length).trim();
     if (!says) throw new Error("empty line");
-    return { says, wants_to_leave: Boolean(out.wants_to_leave) };
+    const rawAction = out.action ?? {};
+    const action: LineAction = {
+      kind: (LINE_ACTION_KINDS as readonly string[]).includes(String(rawAction.kind)) ? String(rawAction.kind) : "none",
+      candidate: String(rawAction.candidate ?? "").slice(0, 40),
+      secret: Number.isFinite(Number(rawAction.secret)) ? Math.round(Number(rawAction.secret)) : 0,
+      to: String(rawAction.to ?? "").slice(0, 40),
+    };
+    return { says, wants_to_leave: Boolean(out.wants_to_leave), action };
   }
 
   // After a conversation, one call reads the transcript and decides memories, moods and affinity.
@@ -348,8 +378,14 @@ For EACH resident (${names.join(", ")}) give:
     const history = recentChats
       .map((ch) => `At ${ch.place}:\n${ch.lines.slice(-8).map((l) => `${l.speaker}: ${l.text}`).join("\n")}`)
       .join("\n\n");
+    // Island news is public: never prompt it with ledger-private memories (tell
+    // records and private-chat summaries stay out of the event generator too).
+    const pubMem = (c: Character) => c.memories.filter((m) => !m.startsWith("(private)") && !m.startsWith("(secret)") && !m.startsWith("(exposed)"));
     const residents = chars
-      .map((c) => `- ${c.name} (${c.mood})${c.memories.length ? `: last memory "${c.memories[c.memories.length - 1]}"` : ""}`)
+      .map((c) => {
+        const mem = pubMem(c);
+        return `- ${c.name} (${c.mood})${mem.length ? `: last memory "${mem[mem.length - 1]}"` : ""}`;
+      })
       .join("\n");
     const prompt = `On a tiny island, these conversations just happened:
 

@@ -41,6 +41,15 @@
     .msg.system { background: transparent; color: var(--muted); font-style: italic; padding: 2px 4px; font-size: 12px; }
     #chatHint { color: var(--muted); font-size: 12px; margin-top: 6px; }
     .empty { color: var(--muted); }
+    #festival .frow { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+    #festival .frow:last-of-type { border-bottom: none; }
+    #festival .fname { font-weight: 600; }
+    #festival .fcount { background: var(--line); border-radius: 999px; padding: 1px 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
+    #festival .frow.fwon .fname { color: var(--accent); }
+    #festival .fclock { margin-top: 8px; color: var(--muted); }
+    #festival .fclock b { color: var(--ink); font-variant-numeric: tabular-nums; }
+    #festival .fwinner { margin-top: 8px; background: #fff1d6; border-radius: 8px; padding: 8px; font-weight: 600; }
+    #festival .fflop { margin-top: 8px; color: var(--muted); font-style: italic; }
   </style>
 </head>
 <body>
@@ -53,6 +62,7 @@
   <main>
     <section>
       <div class="panel"><canvas id="map"></canvas></div>
+      <div class="panel" id="festival" style="display:none"></div>
       <div class="panel"><h2>Island news</h2><div id="feed"></div></div>
     </section>
     <aside>

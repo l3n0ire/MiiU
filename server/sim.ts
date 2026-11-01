@@ -1,11 +1,15 @@
 import {
   asUser, USER_ID,
-  type Line, type LLM, type Outcome, type PairInfo,
+  type Line, type LineAction, type LLM, type Outcome, type PairInfo,
 } from "./llm.ts";
 import {
   LANDMARKS, getRel, newCharacter, placeName, randomWalkable, recordRelChange, relKey, workplaceFor,
   type Character, type Relationship, type Vec, type World, type WorldEvent, type WorldStore,
 } from "./world.ts";
+import {
+  DEFAULT_TUNING, applyAction, ensureSecrets, gameViewFor, maybeStartFestival, removeFromGame, resolveDuePledges, resolveFestival,
+  type GameTuning,
+} from "./game.ts";
 
 const TICK_MS = 200;
 const WALK_SPEED = 1.5; // tiles per sim-second
@@ -33,6 +37,10 @@ export interface SimConfig {
   spawnChance?: number; // default 0.35
   playerSpawning?: boolean; // player-bond spawning (issue #13), default on
   socialWander?: boolean; // memories/relationships bias wandering (issue #11), default on
+  game?: boolean; // festival races, secrets and promises, default on
+  gameCampaignMs?: number; // sim-active ms per race, default 15 min
+  gameCooldownMs?: number; // sim-active ms between races, default 20 min
+  gameTellWindowMs?: number; // sim-active ms for tell-promises, default 10 min
 }
 type ResolvedSimConfig = Required<SimConfig>;
 
@@ -50,6 +58,10 @@ function resolveConfig(c: SimConfig = {}): ResolvedSimConfig {
     spawnChance: Math.min(1, Math.max(0, c.spawnChance ?? 0.35)),
     playerSpawning: c.playerSpawning ?? true,
     socialWander: c.socialWander ?? true,
+    game: c.game ?? true,
+    gameCampaignMs: Math.max(10_000, c.gameCampaignMs ?? DEFAULT_TUNING.campaignMs),
+    gameCooldownMs: Math.max(10_000, c.gameCooldownMs ?? DEFAULT_TUNING.cooldownMs),
+    gameTellWindowMs: Math.max(10_000, c.gameTellWindowMs ?? DEFAULT_TUNING.tellWindowMs),
   };
 }
 const WANDER_CANDIDATES = 5; // candidate targets scored per pick
@@ -74,6 +86,8 @@ interface UserChat {
   generating: boolean;
   ended: boolean;
   summarizing: boolean;
+  // Same ledger-private provenance as ActiveChat: set when a resident tells the player.
+  privateGame?: boolean;
 }
 
 interface ActiveChat {
@@ -88,6 +102,9 @@ interface ActiveChat {
   generating: boolean;
   finished: boolean; // no more lines will be generated
   outcome: Outcome | null;
+  // A ledger-private game move (tell) happened in this chat: its derived
+  // memories/history/transcript are provenance-tagged private for the broadcast.
+  privateGame?: boolean;
 }
 
 // Never persist or print provider error bodies verbatim: they can echo a rejected
@@ -111,6 +128,7 @@ export class Sim {
   private cfg: ResolvedSimConfig;
   private llm: LLM;
   private store?: WorldStore;
+  private gameTuning: GameTuning;
 
   constructor(
     public world: World,
@@ -122,7 +140,12 @@ export class Sim {
     this.cfg = resolveConfig(opts.config);
     this.lastAutoEvent = -this.cfg.autoEventCooldown;
     this.nextAutoEvent = this.rollNextAuto();
-    setInterval(() => this.tick(), TICK_MS);
+    this.gameTuning = { campaignMs: this.cfg.gameCampaignMs, cooldownMs: this.cfg.gameCooldownMs, tellWindowMs: this.cfg.gameTellWindowMs };
+    if (this.cfg.game) ensureSecrets(this.world); // every resident starts with one secret only they know
+    // unref where available (Node) so tests can construct a Sim without holding
+    // the event loop open; browsers ignore it.
+    const timer = setInterval(() => this.tick(), TICK_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
   }
 
   private persist() {
@@ -155,6 +178,7 @@ export class Sim {
     if (this.userChat?.allMembers.some((m) => m.id === id)) return;
     this.world.characters = this.world.characters.filter((c) => c.id !== id);
     for (const k of Object.keys(this.world.relationships)) if (k.split("|").includes(id)) delete this.world.relationships[k];
+    removeFromGame(this.world, id);
     this.persist();
   }
 
@@ -270,12 +294,13 @@ export class Sim {
     const activity = this.recentActivityFor(speaker);
     const lastBond = getRel(this.world, speaker.id, USER_ID).history.at(-1);
     if (lastBond) activity.unshift(`You last talked with ${chat.userName}: "${lastBond.slice(0, 120)}"`);
-    this.llm.generateLine(speaker, others, chat.pairs, chat.lines.filter((l) => l.speaker), chat.place, USER_CHAT_ONGOING, canLeave, activity)
-      .then(({ says, wants_to_leave }) => {
+    this.llm.generateLine(speaker, others, chat.pairs, chat.lines.filter((l) => l.speaker), chat.place, USER_CHAT_ONGOING, canLeave, activity, this.cfg.game ? gameViewFor(this.world, speaker.id, this.gameTuning) : "")
+      .then(({ says, wants_to_leave, action }) => {
         if (chat.ended) return; // chat closed while this reply was generating
         chat.lines.push({ speaker: speaker.name, text: says });
         speaker.bubble = says;
         speaker.bubbleUntil = this.now + 5000;
+        if (this.cfg.game && this.runAction(speaker, action, [...chat.members.map((c) => ({ id: c.id, name: c.name })), { id: USER_ID, name: chat.userName }]) === "tell") chat.privateGame = true;
         if (wants_to_leave && canLeave) {
           chat.members = chat.members.filter((c) => c !== speaker);
           chat.lines.push({ speaker: "", text: `${speaker.name} headed off.` });
@@ -313,8 +338,8 @@ export class Sim {
     chat.summarizing = true;
     this.llm.summarizeConversation(chat.allMembers, chat.pairs, spoken, chat.place, chat.userName)
       .then((outcome) => {
-        applyChatOutcome(this.world, chat.allMembers, outcome, { place: chat.place, userName: chat.userName });
-        this.recentChats.push({ place: chat.place, lines: spoken.slice(-8) });
+        applyChatOutcome(this.world, chat.allMembers, outcome, { place: chat.place, userName: chat.userName, privateGame: chat.privateGame });
+        this.recentChats.push({ place: chat.place, lines: chat.privateGame ? [] : spoken.slice(-8) });
         if (this.recentChats.length > 3) this.recentChats.shift();
         this.persist();
         this.maybeAutoEvent(); // user chats are completed conversations too (issue #2)
@@ -332,6 +357,7 @@ export class Sim {
     if (this.paused) return;
     const dt = TICK_MS * this.speed;
     this.now += dt;
+    if (this.cfg.game) this.tickGame(dt);
 
     for (const c of this.world.characters) {
       if (c.state === "talking") continue;
@@ -361,6 +387,28 @@ export class Sim {
 
     for (const chat of [...this.chats]) this.advanceChat(chat);
     if (this.chats.length < this.cfg.maxChats) this.findMeeting();
+  }
+
+  // Advance the persistent game clock (sim-active time only) and resolve whatever is due.
+  private tickGame(dt: number) {
+    const g = this.world.game;
+    g.clockMs += dt;
+    let changed = false;
+    const started = maybeStartFestival(this.world, this.gameTuning);
+    if (started) { this.log({ kind: "world", participants: [], text: started }); changed = true; }
+    const resolved = resolveFestival(this.world, this.gameTuning);
+    if (resolved) { this.log({ kind: "world", participants: [], text: resolved }); changed = true; }
+    if (resolveDuePledges(this.world).length) changed = true;
+    if (changed) this.persist();
+  }
+
+  // Validate a spoken line's attached game move against the ledger and apply it.
+  // Illegal moves are dropped to none; public moves become island news.
+  private runAction(speaker: Character, action: LineAction, present: { id: string; name: string }[]) {
+    const applied = applyAction(this.world, speaker.id, action, { present, tuning: this.gameTuning });
+    if (applied.event) this.log({ kind: "world", participants: [], text: applied.event });
+    if (applied.kind !== "none") this.persist();
+    return applied.kind;
   }
 
   // Pick the next wander target: a few random candidates, scored by who would be nearby.
@@ -483,10 +531,11 @@ export class Sim {
 
     const speaker = this.pickSpeaker(chat);
     chat.generating = true;
-    this.llm.generateLine(speaker, chat.present.filter((c) => c !== speaker), chat.pairs, chat.lines, chat.place, MAX_TURNS - chat.lines.length, chat.lines.length >= MIN_LINES_BEFORE_LEAVING, this.recentActivityFor(speaker))
-      .then(({ says, wants_to_leave }) => {
+    this.llm.generateLine(speaker, chat.present.filter((c) => c !== speaker), chat.pairs, chat.lines, chat.place, MAX_TURNS - chat.lines.length, chat.lines.length >= MIN_LINES_BEFORE_LEAVING, this.recentActivityFor(speaker), this.cfg.game ? gameViewFor(this.world, speaker.id, this.gameTuning) : "")
+      .then(({ says, wants_to_leave, action }) => {
         chat.lines.push({ speaker: speaker.name, text: says });
         chat.lastSpeaker = speaker;
+        if (this.cfg.game && this.runAction(speaker, action, chat.present.map((c) => ({ id: c.id, name: c.name }))) === "tell") chat.privateGame = true;
         if (wants_to_leave && chat.lines.length > MIN_LINES_BEFORE_LEAVING) chat.present = chat.present.filter((c) => c !== speaker);
         if (chat.lines.length >= MAX_TURNS || chat.present.length < 2) chat.finished = true;
       })
@@ -522,17 +571,18 @@ export class Sim {
 
   private finishChat(chat: ActiveChat, outcome: Outcome) {
     const { members } = chat;
-    const changes = applyChatOutcome(this.world, members, outcome, { place: chat.place });
+    const changes = applyChatOutcome(this.world, members, outcome, { place: chat.place, privateGame: chat.privateGame });
     for (const p of chat.pairs) p.rel.lastTalk = this.now;
 
     this.log({
       kind: "chat",
       participants: members.map((c) => c.id),
       place: chat.place,
-      lines: chat.lines,
+      // Private-game chats keep their transcript off the observer channel entirely.
+      ...(chat.privateGame ? {} : { lines: chat.lines }),
       text: `${listNames(members)} → ${changes.join(", ") || "no change"}`,
     });
-    this.recentChats.push({ place: chat.place, lines: chat.lines.slice(-8) });
+    this.recentChats.push({ place: chat.place, lines: chat.privateGame ? [] : chat.lines.slice(-8) });
     if (this.recentChats.length > 3) this.recentChats.shift();
     this.endChat(chat);
     this.persist();
@@ -634,9 +684,39 @@ export class Sim {
   }
 
   snapshot() {
+    const g = this.world.game;
+    // Wall-clock estimate of a game-clock instant at the current speed; re-estimated on
+    // every broadcast, so the countdown freezes while paused and re-syncs after resume.
+    const est = (gameMs: number) => Date.now() + Math.max(0, gameMs - g.clockMs) / this.speed;
+    const f = g.festival;
+    // Observer-channel redaction: the broadcast is the observer UI channel, not a
+    // persistence path (saves/exports serialize the full world). Ledger-derived
+    // private entries - tell records "(secret)", exposure tell-chains "(exposed)" -
+    // and any text of a still-unexposed secret never leave the sim; durable facts
+    // are prompt substrate and are not part of the UI contract at all.
+    const unexposedTexts = g.secrets.filter((s) => !s.exposed).map((s) => s.text).filter((t) => t.length >= 8);
+    const scrub = (m: string) =>
+      !m.startsWith("(secret)") && !m.startsWith("(exposed)") && !m.startsWith("(private)") &&
+      !unexposedTexts.some((t) => m.includes(t));
     return {
-      characters: this.world.characters,
-      relationships: Object.values(this.world.relationships),
+      characters: this.world.characters.map((c) => {
+        const { facts: _facts, memories, ...pub } = c;
+        return { ...pub, memories: memories.filter(scrub) };
+      }),
+      festival: this.cfg.game && f
+        ? {
+            status: f.status,
+            candidates: f.candidates.map((id) => ({ id, name: this.byId(id)?.name ?? "?" })),
+            endorsements: Object.entries(f.endorsements).map(([voter, candidate]) => ({ voter, candidate })),
+            deadline: est(f.deadline),
+            winner: f.winner,
+            nextAt: f.nextAt === null ? null : est(f.nextAt),
+          }
+        : null,
+      relationships: Object.values(this.world.relationships).map((r) => ({
+        ...r,
+        history: r.history.filter((h) => !h.startsWith("(private)")),
+      })),
       paused: this.paused,
       speed: this.speed,
       status: this.status(),
@@ -664,8 +744,11 @@ export function applyChatOutcome(
   world: World,
   members: Character[],
   outcome: Outcome,
-  opts: { place: string; userName?: string },
+  opts: { place: string; userName?: string; privateGame?: boolean },
 ): string[] {
+  // Provenance tag for writes derived from a chat with a ledger-private game move:
+  // they stay in the world for prompts/saves but are filtered from the broadcast.
+  const PVT = opts.privateGame ? "(private) " : "";
   const { place, userName } = opts;
   const groupNote = members.length > 2 ? " (group chat)" : "";
   const byName = (n: string) => members.find((c) => c.name === n);
@@ -680,7 +763,7 @@ export function applyChatOutcome(
     rel.affinity = Math.max(-100, Math.min(100, rel.affinity + b.affinity_delta));
     rel.label = b.relationship;
     recordRelChange(rel, b.affinity_delta, `Bond with ${userName} at ${place}`, before);
-    rel.history.push(`Bond with ${userName} at ${place}: ${outcome.outcomes.find((o) => o.name === c.name)?.memory || "a chat"}`);
+    rel.history.push(`${PVT}Bond with ${userName} at ${place}: ${outcome.outcomes.find((o) => o.name === c.name)?.memory || "a chat"}`);
     if (rel.history.length > 10) rel.history.shift();
   }
 
@@ -695,10 +778,10 @@ export function applyChatOutcome(
     recordRelChange(rel, p.affinity_delta, cause, before);
     const memory = outcome.outcomes.find((o) => o.name === a.name)?.memory;
     if (userName) {
-      rel.history.push(`${cause}: ${memory || "a chat"}`);
+      rel.history.push(`${PVT}${cause}: ${memory || "a chat"}`);
       if (rel.history.length > 10) rel.history.shift();
     } else if (memory) {
-      rel.history.push(`At ${place}${groupNote}: ${memory}`);
+      rel.history.push(`${PVT}At ${place}${groupNote}: ${memory}`);
       if (rel.history.length > 10) rel.history.shift();
     }
     changes.push(`${a.name}–${b.name}: ${rel.label} (${p.affinity_delta >= 0 ? "+" : ""}${p.affinity_delta})`);
@@ -710,7 +793,7 @@ export function applyChatOutcome(
     c.mood = o.mood;
     const text = (o.memory ?? "").trim();
     if (text) {
-      c.memories.push(userName ? `(chatting with ${userName}) ${text}` : `(with ${listNames(members.filter((m) => m !== c))}) ${text}`);
+      c.memories.push(PVT + (userName ? `(chatting with ${userName}) ${text}` : `(with ${listNames(members.filter((m) => m !== c))}) ${text}`));
       if (c.memories.length > 10) c.memories.shift();
     }
     for (const f of o.facts ?? []) {
