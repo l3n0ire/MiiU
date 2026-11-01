@@ -7,7 +7,7 @@ import {
   type ActionContext,
 } from "./game.ts";
 import { getRel, migrateWorld, seedWorld, type World } from "./world.ts";
-import { USER_ID, type LLM } from "./llm.ts";
+import { USER_ID, createLLM, type LLM } from "./llm.ts";
 import { Sim } from "./sim.ts";
 
 const stubLlm: LLM = {
@@ -451,4 +451,29 @@ test("event generator: private chats contribute no transcript, public chats stil
   assert.ok(!fed[0].includes("store-bought"), "private transcript never reaches generateEvent");
   assert.ok(fed[1].includes("sunny day"), "public transcripts still feed generateEvent");
   assert.ok(!fed[1].includes("store-bought"), "earlier private transcript stays out of later feeds");
+});
+
+test("event prompt: public exposure fallout stays in, private attribution chain stays out", async () => {
+  const w = freshWorld();
+  const [a] = w.characters;
+  a.memories.push("(exposed) the cake secret reached Pip through Marlo"); // private attribution chain
+  a.memories.push("(secret) told Marlo about the potluck cake"); // unexposed tell record
+  a.memories.push("(private) (chatting with Mitra) confided the potluck story"); // private-chat summary
+  a.memories.push("(island news) everyone now knows the cake was store-bought"); // public fallout
+  let prompt = "";
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: any, init: any) => {
+    prompt = JSON.parse(String(init?.body)).messages.find((m: any) => m.role === "user").content;
+    return new Response(JSON.stringify({ message: { content: JSON.stringify({ headline: "h", target: "everyone", gather: "nowhere" }) } }), { status: 200 });
+  }) as any;
+  try {
+    const llm = createLLM({ provider: "ollama", ollamaUrl: "http://stub.invalid" });
+    await llm.generateEvent([], w.characters, ["Park"]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+  assert.ok(prompt.includes("everyone now knows the cake was store-bought"), "public exposure fallout must stay available to island news");
+  assert.ok(!prompt.includes("through Marlo"), "exposure tell-chain attribution must not reach the public event prompt");
+  assert.ok(!prompt.includes("told Marlo about the potluck"), "unexposed tell record must not reach the public event prompt");
+  assert.ok(!prompt.includes("confided the potluck story"), "private-chat summary must not reach the public event prompt");
 });
