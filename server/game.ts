@@ -40,6 +40,9 @@ const gid = (p: string) => `${p}${Date.now().toString(36)}-${(nextId++).toString
 
 const byId = (world: World, id: string) => world.characters.find((c) => c.id === id);
 const nameOf = (world: World, id: string) => (id === USER_ID ? "you" : byId(world, id)?.name ?? "someone");
+// Player-facing event/feed texts use nameOf ("you"). Ledger memories and prompt
+// context are read by residents, so the player renders in third person there.
+const nameOf3 = (world: World, id: string) => (id === USER_ID ? "the player" : byId(world, id)?.name ?? "someone");
 
 // ---------- secrets ----------
 
@@ -83,8 +86,8 @@ function chainFor(world: World, s: Secret): string[] {
   for (const k of s.knownBy) {
     if (k === s.subject) continue;
     const from = s.toldBy[k];
-    if (from && from !== s.subject) chain.push(`${nameOf(world, from)} told ${nameOf(world, k)}`);
-    else chain.push(`${nameOf(world, k)} found out`);
+    if (from && from !== s.subject) chain.push(`${nameOf3(world, from)} told ${nameOf3(world, k)}`);
+    else chain.push(`${nameOf3(world, k)} found out`);
   }
   return chain;
 }
@@ -202,9 +205,9 @@ function pledgeExists(world: World, promiser: string, promisee: string, secret: 
 function makePledge(world: World, promiser: string, promisee: string, kind: Pledge["kind"], secret: Secret, deadline: number): Pledge {
   const p: Pledge = { id: gid("plg"), promiser, promisee, kind, secret: secret.id, deadline, status: "active" };
   world.game.pledges.push(p);
-  const what = kind === "keep_secret" ? `keep the secret about ${nameOf(world, secret.subject)} until the festival` : `tell them the secret about ${nameOf(world, secret.subject)}`;
-  remember(world, promiser, `(promise) You promised ${nameOf(world, promisee)} to ${what}.`);
-  remember(world, promisee, `(promise) ${nameOf(world, promiser)} promised to ${what}.`);
+  const what = kind === "keep_secret" ? `keep the secret about ${nameOf3(world, secret.subject)} until the festival` : `tell them the secret about ${nameOf3(world, secret.subject)}`;
+  remember(world, promiser, `(promise) You promised ${nameOf3(world, promisee)} to ${what}.`);
+  remember(world, promisee, `(promise) ${nameOf3(world, promiser)} promised to ${what}.`);
   return p;
 }
 
@@ -213,10 +216,11 @@ function settlePledge(world: World, p: Pledge, kept: boolean, why: string): void
   p.status = kept ? "kept" : "broken";
   const delta = kept ? PLEDGE_KEPT_GAIN : PLEDGE_BROKEN_COST;
   const mark = `${nameOf(world, p.promiser)} ${kept ? "kept" : "broke"} a promise to ${nameOf(world, p.promisee)} (${why})`;
+  const memMark = `${nameOf3(world, p.promiser)} ${kept ? "kept" : "broke"} a promise to ${nameOf3(world, p.promisee)} (${why})`;
   shiftAffinity(world, p.promiser, p.promisee, delta, mark);
   relHistory(world, p.promiser, p.promisee, mark);
-  remember(world, p.promiser, `(promise ${kept ? "kept" : "broken"}) ${mark}.`);
-  remember(world, p.promisee, `(promise ${kept ? "kept" : "broken"}) ${mark}.`);
+  remember(world, p.promiser, `(promise ${kept ? "kept" : "broken"}) ${memMark}.`);
+  remember(world, p.promisee, `(promise ${kept ? "kept" : "broken"}) ${memMark}.`);
 }
 
 // A keep-secret pledge breaks the moment the promiser shares or exposes that secret.
@@ -326,8 +330,8 @@ export function applyAction(world: World, speakerId: string, raw: RawAction | un
         settlePledge(world, p, true, "delivered as promised");
       }
     }
-    remember(world, speakerId, `(secret) You told ${target.name} the secret about ${nameOf(world, secret.subject)}.`);
-    remember(world, target.id, `(secret) ${speaker.name} told you privately: "${secret.text}" (about ${nameOf(world, secret.subject)}).`);
+    remember(world, speakerId, `(secret) You told ${nameOf3(world, target.id)} the secret about ${nameOf3(world, secret.subject)}.`);
+    remember(world, target.id, `(secret) ${speaker.name} told you privately: "${secret.text}" (about ${nameOf3(world, secret.subject)}).`);
     return { kind, note: `told ${target.name} secret ${secret.id}` };
   }
   return applyRest(world, speaker, kind, secret, raw ?? {}, ctx);
@@ -353,7 +357,7 @@ function applyRest(world: World, speaker: Character, kind: ActionKind, secret: S
       // Leak discovery: the subject privately learns how it spread.
       remember(world, secret.subject, `(exposed) ${speaker.name} exposed your secret${chain.length ? `; it spread via: ${chain.join(", ")}` : ""}.`);
     }
-    remember(world, speaker.id, `(exposed) You exposed the secret about ${nameOf(world, secret.subject)}.`);
+    remember(world, speaker.id, `(exposed) You exposed the secret about ${nameOf3(world, secret.subject)}.`);
     const text = `📣 Secret exposed: ${secret.text} (about ${nameOf(world, secret.subject)})`;
     return { kind, event: text, note: isSelf ? "self-exposure: no affinity costs" : `costs applied (${EXPOSE_WITNESS_COST} witnesses, ${EXPOSE_LEAKER_COST} leaker)` };
   }
@@ -402,16 +406,16 @@ export function gameViewFor(world: World, speakerId: string, tuning: GameTuning)
   const known = knownSecrets(world, speakerId);
   if (known.length) {
     out.push("Secrets you know (nobody else knows what you know):");
-    known.forEach((s, i) => out.push(`  ${i + 1}) about ${nameOf(world, s.subject)}${s.exposed ? " [already public]" : ""}: "${s.text}"`));
+    known.forEach((s, i) => out.push(`  ${i + 1}) about ${nameOf3(world, s.subject)}${s.exposed ? " [already public]" : ""}: "${s.text}"`));
   }
   const mine = g.pledges.filter((p) => p.status === "active" && p.promiser === speakerId);
   for (const p of mine) {
     const s = g.secrets.find((x) => x.id === p.secret);
-    if (s) out.push(`Promise you made: ${p.kind === "keep_secret" ? "keep" : "tell"} the secret about ${nameOf(world, s.subject)}${p.kind === "tell_secret" ? ` to ${nameOf(world, p.promisee)}` : ""}.`);
+    if (s) out.push(`Promise you made: ${p.kind === "keep_secret" ? "keep" : "tell"} the secret about ${nameOf3(world, s.subject)}${p.kind === "tell_secret" ? ` to ${nameOf3(world, p.promisee)}` : ""}.`);
   }
   if (!out.length) return "";
   return `Island game - you may attach ONE action to your line (only if it is legal right now; anything illegal is ignored):
 ${out.join("\n")}
 action choices: {"kind":"none"} (just talk) | {"kind":"endorse","candidate":"name"} or {"kind":"switch","candidate":"name"} to publicly back a festival candidate (never if YOU are a candidate) | {"kind":"hint","secret":N} tease a secret you know without revealing it | {"kind":"tell","secret":N,"to":"name"} privately reveal it (one-on-one ONLY) | {"kind":"expose","secret":N} make it island news (hurts them, and you) | {"kind":"promise_keep","secret":N,"to":"name"} vow to keep it until the festival | {"kind":"promise_tell","secret":N,"to":"name"} vow to tell them within 10 minutes.
 Secrets N refer to your numbered list above. Never reveal or hint at secrets not on your list.`;
-      }
+}
