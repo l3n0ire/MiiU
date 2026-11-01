@@ -342,6 +342,7 @@ $("event").addEventListener("submit", (e) => {
 });
 // ---------- chat with miis ----------
 let lastChatKey = "";
+let lastPickKey = "";
 function renderChat() {
   const uc = state.userChat;
   $("chatSetup").style.display = uc ? "none" : "";
@@ -362,7 +363,15 @@ function renderChat() {
     const html = state.characters.map((c) =>
       `<label class="chip" style="cursor:pointer"><input type="checkbox" value="${esc(c.id)}" style="width:auto;margin:0 4px 0 0" />${esc(c.name)}</label>`
     ).join("");
-    if ($("chatPick").innerHTML !== html) $("chatPick").innerHTML = html;
+    if (html !== lastPickKey) {
+      // Rebuild only when the resident list changes. Comparing against innerHTML
+      // always mismatches (the browser re-serializes the markup), which rebuilt
+      // the list on every state tick and wiped checkbox state before Start chat.
+      const checked = new Set([...$("chatPick").querySelectorAll("input:checked")].map((i) => i.value));
+      lastPickKey = html;
+      $("chatPick").innerHTML = html;
+      for (const i of $("chatPick").querySelectorAll("input")) i.checked = checked.has(i.value);
+    }
   }
 }
 $("chatStartBtn").onclick = () => {
