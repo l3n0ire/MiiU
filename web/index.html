@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://api.openai.com http://localhost:* http://127.0.0.1:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MiiU Island</title>
+  <style>
+    :root { --bg: #f4efe6; --panel: #fffaf2; --ink: #2d2a26; --muted: #8a8278; --line: #e4dccd; --accent: #ff7a59; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.4 ui-rounded, "SF Pro Rounded", system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+    header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+    header h1 { font-size: 18px; margin: 0 8px 0 0; }
+    #status { color: var(--muted); flex: 1; min-width: 200px; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; padding: 16px; max-width: 1280px; margin: 0 auto; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+    #map { width: 100%; height: auto; display: block; border-radius: 10px; cursor: pointer; image-rendering: pixelated; }
+    #graph { width: 100%; height: 260px; display: block; }
+    button { font: inherit; border: 1px solid var(--line); background: white; border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    input, textarea, select { font: inherit; width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: white; margin-bottom: 6px; }
+    textarea { resize: vertical; min-height: 54px; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    .row input[type=color] { width: 44px; height: 34px; padding: 2px; flex: none; }
+    #feed { max-height: 360px; overflow-y: auto; }
+    .ev { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+    .ev .meta { color: var(--muted); font-size: 12px; }
+    .ev .line { margin: 2px 0 0 8px; }
+    .ev .line b { font-weight: 600; }
+    .ev.world { background: #fff1d6; border-radius: 8px; padding: 8px; border-bottom: none; margin: 4px 0; }
+    #presets button { font-size: 12px; padding: 3px 8px; margin: 0 4px 6px 0; }
+    .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--line); margin: 2px 4px 2px 0; }
+    #detail ul { margin: 4px 0; padding-left: 18px; }
+    #chatLog { max-height: 300px; overflow-y: auto; margin-bottom: 8px; }
+    .msg { margin: 6px 0; padding: 6px 10px; border-radius: 12px; background: #f0ead9; max-width: 92%; }
+    .msg .who { font-weight: 600; font-size: 12px; color: var(--muted); display: block; margin-bottom: 1px; }
+    .msg.you { background: var(--accent); color: #fff; margin-left: auto; }
+    .msg.you .who { color: rgba(255,255,255,.8); }
+    .msg.system { background: transparent; color: var(--muted); font-style: italic; padding: 2px 4px; font-size: 12px; }
+    #chatHint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .empty { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🏝️ MiiU Island</h1>
+    <span id="status">connecting…</span>
+    <button id="pause">Pause</button>
+    <label class="row">Speed <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1" style="width:100px;margin:0" /></label>
+  </header>
+  <main>
+    <section>
+      <div class="panel"><canvas id="map"></canvas></div>
+      <div class="panel"><h2>Island news</h2><div id="feed"></div></div>
+    </section>
+    <aside>
+      <div class="panel" id="detail"><h2>Resident</h2><p class="empty">Click someone on the map.</p></div>
+      <div class="panel" id="chat">
+        <h2>Chat with a mii</h2>
+        <div id="chatSetup">
+          <div id="chatPick" style="margin-bottom:6px"></div>
+          <button class="primary" id="chatStartBtn">Start chat</button>
+        </div>
+        <div id="chatUI" style="display:none">
+          <div id="chatLog"></div>
+          <form id="chatForm" class="row">
+            <input name="text" placeholder="Say something…" autocomplete="off" maxlength="500" />
+            <button class="primary" type="submit" style="flex:none">Send</button>
+          </form>
+          <div class="row" style="justify-content:space-between;margin-top:6px">
+            <span id="chatHint"></span>
+            <button type="button" id="chatEndBtn">End chat</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel"><h2>Relationships</h2><canvas id="graph"></canvas></div>
+      <div class="panel">
+        <h2>Make something happen</h2>
+        <div id="presets"></div>
+        <form id="event">
+          <textarea name="text" placeholder="e.g. A mysterious love letter washes up on the beach" required maxlength="200"></textarea>
+          <div class="row">
+            <select name="target" id="eventTarget"><option value="">Everyone hears about it</option></select>
+            <select name="gather" id="eventGather"><option value="">Nobody moves</option></select>
+          </div>
+          <button class="primary" type="submit" id="eventBtn">Trigger event</button>
+        </form>
+      </div>
+      <div class="panel">
+        <h2>New resident</h2>
+        <form id="create">
+          <div class="row"><input name="name" placeholder="Name" required maxlength="20" /><input name="color" type="color" value="#f2b134" /></div>
+          <textarea name="personality" placeholder="Personality (e.g. shy poet who secretly loves heavy metal)"></textarea>
+          <input name="likes" placeholder="Likes" />
+          <input name="dislikes" placeholder="Dislikes" />
+          <button class="primary" type="submit">Move in</button>
+        </form>
+      </div>
+    </aside>
+  </main>
+  <script src="bundle.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -21,6 +21,27 @@ npm start
 
 `npm start` reads `.env` automatically (it's gitignored, so your key stays local). Defaults to `gpt-5-mini`; set `MIIU_MODEL` to use another model.
 
+
+## Browser version: your island, your model (issue #19)
+
+A fully browser-side build: each visitor gets their **own island**, powered by a model **they** connect - no server to run or pay for. Everything (simulation, saves, model calls) happens in the visitor's tab:
+
+- **OpenAI (bring your own key):** the key is entered in the setup screen, kept only in that browser (memory only, unless "remember on this device" is checked), and sent only to `api.openai.com` when the island talks. The static host only serves files and never receives the key. Anyone with access to the browser profile could use a remembered key, so don't remember it on shared devices.
+- **Your own Ollama (experimental):** the browser calls your local Ollama directly. One-time setup on your machine: start Ollama with `OLLAMA_ORIGINS=<this site's origin> ollama serve` so it accepts the site's cross-origin requests, and allow the browser's local-network-access permission if prompted (Chrome gates public sites calling `localhost` behind it). Ollama must run on this computer (`localhost`/`127.0.0.1`); a server on another machine isn't reachable from the hosted page. Fully offline alternative: run the app locally with `npm start` as above.
+- **Saves:** the island persists in the browser's localStorage and pauses when the tab closes. Export/import (JSON) moves it between devices; clearing site data erases it.
+
+Build and run the static version locally:
+
+```bash
+npm install
+npm run build:web   # outputs dist/
+npx serve dist      # or any static file server
+```
+
+Deploy by hosting `dist/` on any static host (Cloudflare Pages, Netlify, Vercel hobby, GitHub Pages - build command `npm ci && npm run build:web`, output directory `dist`). No paid backend required; there is no multiplayer and no 24/7 background simulation in this mode.
+
+The Node server mode above is unchanged and still works for a shared island or fully local use.
+
 ## How it works
 
 - `server/sim.ts`: ticks 5x/sec. Characters walk between landmarks; when two meet (and haven't talked in the last minute), anyone standing nearby joins in (up to 4). Up to 3 conversations run at once (`MIIU_MAX_CHATS`).

@@ -14,9 +14,13 @@ const nodes = new Map(); // id -> graph node {x,y,vx,vy}
 
 const nameOf = (id) => (id === "__user__" ? "You" : state.characters.find((c) => c.id === id)?.name ?? "?");
 const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+const safeColor = (v) => (/^#[0-9a-fA-F]{6}$/.test(String(v)) ? String(v) : "#888888");
+const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 function connect() {
-  ws = new WebSocket(`ws://${location.host}`);
+  // Static build (issue #19): the island runs in this tab; web/app.ts installs the connector.
+  if (window.MIIU_STATIC && !window.MIIU_CONNECT) { setTimeout(connect, 100); return; }
+  ws = window.MIIU_CONNECT ? window.MIIU_CONNECT() : new WebSocket(`ws://${location.host}`);
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.type === "init") {
@@ -245,19 +249,19 @@ function renderDetail() {
   const rels = state.relationships.filter((r) => r.a === c.id || r.b === c.id).sort((a, b) => b.affinity - a.affinity);
   const others = state.characters.filter((o) => o.id !== c.id);
   const html = `<h2>Resident</h2>
-    <div class="row" style="justify-content:space-between"><b style="font-size:16px;color:${c.color}">${esc(c.name)}</b><span class="chip">${c.mood}</span></div>
+    <div class="row" style="justify-content:space-between"><b style="font-size:16px;color:${safeColor(c.color)}">${esc(c.name)}</b><span class="chip">${esc(c.mood)}</span></div>
     <div class="meta">💼 ${esc(c.occupation || "—")}</div>
     <p style="margin:6px 0">${esc(c.personality)}</p>
     <div class="meta">❤ ${esc(c.likes || "—")} · ✖ ${esc(c.dislikes || "—")}</div>
     <h2 style="margin-top:10px">Feelings</h2>
-    ${rels.length ? rels.map((r) => `<span class="chip" style="background:${relColor(r)}22">${esc(nameOf(r.a === c.id ? r.b : r.a))}: ${r.label} (${r.affinity})</span>`).join("") : '<p class="empty">Hasn\'t met anyone yet.</p>'}
+    ${rels.length ? rels.map((r) => `<span class="chip" style="background:${relColor(r)}22">${esc(nameOf(r.a === c.id ? r.b : r.a))}: ${esc(r.label)} (${num(r.affinity)})</span>`).join("") : '<p class="empty">Hasn\'t met anyone yet.</p>'}
     ${rels.some((r) => r.timeline?.length) ? `<h2 style="margin-top:10px">History</h2>` + rels.filter((r) => r.timeline?.length).map((r) => `
       <div class="meta" style="margin-top:6px"><b>${esc(nameOf(r.a === c.id ? r.b : r.a))}</b></div>
-      <ul style="margin-top:2px">${r.timeline.slice(-5).reverse().map((e) => `<li class="meta">${esc(e.cause)}: ${e.from ? esc(e.from) + " → " : "became "}<b>${esc(e.to)}</b> (${e.delta >= 0 ? "+" : ""}${e.delta}, now ${e.affinity})</li>`).join("")}</ul>`).join("") : ""}
+      <ul style="margin-top:2px">${r.timeline.slice(-5).reverse().map((e) => `<li class="meta">${esc(e.cause)}: ${e.from ? esc(e.from) + " → " : "became "}<b>${esc(e.to)}</b> (${num(e.delta) >= 0 ? "+" : ""}${num(e.delta)}, now ${num(e.affinity)})</li>`).join("")}</ul>`).join("") : ""}
     <h2 style="margin-top:10px">Memories</h2>
     ${c.memories.length ? `<ul>${c.memories.slice().reverse().map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : '<p class="empty">No memories yet.</p>'}
     <div class="row" style="margin-top:8px">
-      <select id="talkTo">${others.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join("")}</select>
+      <select id="talkTo">${others.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("")}</select>
       <button id="talkBtn" style="flex:none">Make talk</button>
     </div>
     <button id="chatWithBtn" style="margin-top:4px">Chat with ${esc(c.name)}</button>
@@ -309,7 +313,7 @@ $("create").addEventListener("submit", (e) => {
 let lastTargets = "";
 function renderTargets() {
   const html = '<option value="">Everyone hears about it</option>' +
-    state.characters.map((c) => `<option value="${c.id}">Only ${esc(c.name)}</option>`).join("");
+    state.characters.map((c) => `<option value="${esc(c.id)}">Only ${esc(c.name)}</option>`).join("");
   if (html === lastTargets) return;
   const keep = $("eventTarget").value;
   $("eventTarget").innerHTML = lastTargets = html;
@@ -356,7 +360,7 @@ function renderChat() {
   } else {
     lastChatKey = "";
     const html = state.characters.map((c) =>
-      `<label class="chip" style="cursor:pointer"><input type="checkbox" value="${c.id}" style="width:auto;margin:0 4px 0 0" />${esc(c.name)}</label>`
+      `<label class="chip" style="cursor:pointer"><input type="checkbox" value="${esc(c.id)}" style="width:auto;margin:0 4px 0 0" />${esc(c.name)}</label>`
     ).join("");
     if ($("chatPick").innerHTML !== html) $("chatPick").innerHTML = html;
   }

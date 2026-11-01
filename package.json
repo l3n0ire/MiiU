@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "start": "tsx --env-file-if-exists=.env server/index.ts",
-    "dev": "tsx watch --env-file-if-exists=.env server/index.ts"
+    "dev": "tsx watch --env-file-if-exists=.env server/index.ts",
+    "build:web": "esbuild web/app.ts --bundle --format=iife --target=es2022 --outfile=dist/bundle.js && cp web/index.html dist/index.html && cp public/app.js dist/app.js",
+    "start:web": "npm run build:web && npx serve dist"
   },
   "dependencies": {
     "ws": "^8.18.0"
@@ -13,6 +15,7 @@
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.12",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "esbuild": "^0.25.0"
   }
 }
