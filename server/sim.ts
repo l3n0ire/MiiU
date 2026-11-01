@@ -86,6 +86,8 @@ interface UserChat {
   generating: boolean;
   ended: boolean;
   summarizing: boolean;
+  // Same ledger-private provenance as ActiveChat: set when a resident tells the player.
+  privateGame?: boolean;
 }
 
 interface ActiveChat {
@@ -298,7 +300,7 @@ export class Sim {
         chat.lines.push({ speaker: speaker.name, text: says });
         speaker.bubble = says;
         speaker.bubbleUntil = this.now + 5000;
-        if (this.cfg.game) this.runAction(speaker, action, [...chat.members.map((c) => ({ id: c.id, name: c.name })), { id: USER_ID, name: chat.userName }]);
+        if (this.cfg.game && this.runAction(speaker, action, [...chat.members.map((c) => ({ id: c.id, name: c.name })), { id: USER_ID, name: chat.userName }]) === "tell") chat.privateGame = true;
         if (wants_to_leave && canLeave) {
           chat.members = chat.members.filter((c) => c !== speaker);
           chat.lines.push({ speaker: "", text: `${speaker.name} headed off.` });
@@ -336,8 +338,8 @@ export class Sim {
     chat.summarizing = true;
     this.llm.summarizeConversation(chat.allMembers, chat.pairs, spoken, chat.place, chat.userName)
       .then((outcome) => {
-        applyChatOutcome(this.world, chat.allMembers, outcome, { place: chat.place, userName: chat.userName });
-        this.recentChats.push({ place: chat.place, lines: spoken.slice(-8) });
+        applyChatOutcome(this.world, chat.allMembers, outcome, { place: chat.place, userName: chat.userName, privateGame: chat.privateGame });
+        this.recentChats.push({ place: chat.place, lines: chat.privateGame ? [] : spoken.slice(-8) });
         if (this.recentChats.length > 3) this.recentChats.shift();
         this.persist();
         this.maybeAutoEvent(); // user chats are completed conversations too (issue #2)
@@ -580,7 +582,7 @@ export class Sim {
       ...(chat.privateGame ? {} : { lines: chat.lines }),
       text: `${listNames(members)} → ${changes.join(", ") || "no change"}`,
     });
-    this.recentChats.push({ place: chat.place, lines: chat.lines.slice(-8) });
+    this.recentChats.push({ place: chat.place, lines: chat.privateGame ? [] : chat.lines.slice(-8) });
     if (this.recentChats.length > 3) this.recentChats.shift();
     this.endChat(chat);
     this.persist();
@@ -761,7 +763,7 @@ export function applyChatOutcome(
     rel.affinity = Math.max(-100, Math.min(100, rel.affinity + b.affinity_delta));
     rel.label = b.relationship;
     recordRelChange(rel, b.affinity_delta, `Bond with ${userName} at ${place}`, before);
-    rel.history.push(`Bond with ${userName} at ${place}: ${outcome.outcomes.find((o) => o.name === c.name)?.memory || "a chat"}`);
+    rel.history.push(`${PVT}Bond with ${userName} at ${place}: ${outcome.outcomes.find((o) => o.name === c.name)?.memory || "a chat"}`);
     if (rel.history.length > 10) rel.history.shift();
   }
 
@@ -776,7 +778,7 @@ export function applyChatOutcome(
     recordRelChange(rel, p.affinity_delta, cause, before);
     const memory = outcome.outcomes.find((o) => o.name === a.name)?.memory;
     if (userName) {
-      rel.history.push(`${cause}: ${memory || "a chat"}`);
+      rel.history.push(`${PVT}${cause}: ${memory || "a chat"}`);
       if (rel.history.length > 10) rel.history.shift();
     } else if (memory) {
       rel.history.push(`${PVT}At ${place}${groupNote}: ${memory}`);
