@@ -174,9 +174,13 @@ mapCanvas.addEventListener("click", (e) => {
 });
 
 // ---------- relationship graph ----------
+const REL_COLORS = {
+  crush: "#e2336b", family: "#e2a63d", mentor: "#8e6cc9",
+  frenemy: "#e67e22", coworker: "#3a9bc2", neighbor: "#67b56b", ex: "#999",
+};
 function relColor(r) {
-  if (r.label === "crush") return "#e2336b";
-  if (r.label === "rival" || r.affinity < 0) return "#d9534f";
+  if (REL_COLORS[r.label]) return REL_COLORS[r.label];
+  if (r.label === "rival" || r.label === "enemy" || r.affinity < 0) return "#d9534f";
   if (r.affinity > 0) return "#3fb57a";
   return "#bbb";
 }
