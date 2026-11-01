@@ -264,7 +264,10 @@ export class Sim {
           c.memories.push(`(chatting with ${chat.userName}) ${o.memory}`);
           if (c.memories.length > 10) c.memories.shift();
         }
+        this.recentChats.push({ place: chat.place, lines: spoken.slice(-8) });
+        if (this.recentChats.length > 3) this.recentChats.shift();
         saveWorld(this.world);
+        this.maybeAutoEvent(); // user chats are completed conversations too (issue #2)
       })
       .catch((err) => console.error("LLM error (user chat summary):", err))
       .finally(() => { chat.summarizing = false; finish(); });
