@@ -86,6 +86,12 @@ class PassMind {
     private now: () => number,
   ) {}
 
+  freeze() { // the run failed: any in-flight reply is now stale
+    this.generation++;
+    this.inFlight = false;
+    this.committed = null;
+  }
+
   newPuzzle() {
     this.committed = null;
     this.memory = [];
@@ -216,6 +222,8 @@ export class PassMinds implements ExpeditionController {
 
   budgetExhausted(): boolean { return this.budgetOut; }
 
+  runFailed(): void { for (const m of this.minds.values()) m.freeze(); }
+
   private mindFor(id: string, name: string): PassMind {
     let m = this.minds.get(id);
     if (!m) { m = new PassMind(id, name, this.caller, this.spendCall, this.now); this.minds.set(id, m); }
@@ -279,9 +287,12 @@ function buildAgentPrompt(view: MemberView, mind: PassMind): string {
   const me = view.me;
   const crateLine = (c: MemberView["crates"][number]) => {
     if (c.delivered) return `- ${c.id}: delivered`;
+    // a crate on the move would reveal its carrier's route (possibly through
+    // a pass this mii does not know) - name the carrier, give no coordinates
+    if (c.carriedBy) return `- ${c.id}: being carried by ${c.carriedBy === me.name ? "you" : c.carriedBy}`;
     const who = c.claimedBy ? (c.claimedBy === me.id ? "you are on it" : "claimed") : "unclaimed";
     const route = c.routeTiles === null ? "no route with what you know" : `~${c.routeTiles} tiles away with what you know`;
-    return `- ${c.id} at (${Math.round(c.x)},${Math.round(c.y)}) - ${who}, ${route}`;
+    return `- ${c.id} at (${Math.round(c.x!)},${Math.round(c.y!)}) - ${who}, ${route}`;
   };
   const memory = mind.memoryLines();
 

@@ -519,12 +519,12 @@ function draw() {
     ctx.fillRect(c.x, c.y, 5, 5);
   }
   $("nowLine").textContent = nowLine(s);
-  $("puzzleStatus").textContent = s.paused
-    ? `Paused - puzzle #${s.seed}`
-    : s.status === "complete"
-      ? `All supplies home! - puzzle #${s.seed}`
-      : s.status === "failed"
-        ? `Task failed - call budget used up - puzzle #${s.seed}`
+  $("puzzleStatus").textContent = s.status === "failed"
+    ? `Task failed - call budget used up - puzzle #${s.seed}`
+    : s.paused
+      ? `Paused - puzzle #${s.seed}`
+      : s.status === "complete"
+        ? `All supplies home! - puzzle #${s.seed}`
         : `Supplies: ${s.delivered}/${s.total} - puzzle #${s.seed}${s.pass.sharedBy ? ` - pass shared by ${s.pass.sharedBy}` : s.pass.foundByAnyone ? " - pass found (private)" : ""}`;
   ($("pauseBtn") as HTMLButtonElement).textContent = s.paused ? "Resume" : "Pause";
 }

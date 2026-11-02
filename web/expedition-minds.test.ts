@@ -260,6 +260,7 @@ test("a reply in flight when the budget runs out cannot mutate the failed run (P
   const frozen = JSON.stringify(p.snapshot().members);
   const deliveredBefore = p.deliveredCount();
   const callsBefore = minds.stats().calls;
+  const statusesBefore = JSON.stringify(minds.statuses());
   // the in-flight reply resolves AFTER the failure
   (resolveLate as unknown as (v: Move) => void)({ action: "fetch", crate: "crate-0", reason: "late answer" });
   await flush();
@@ -272,6 +273,7 @@ test("a reply in flight when the budget runs out cannot mutate the failed run (P
   assert.equal(p.deliveredCount(), deliveredBefore, "no crate finished under the failure label");
   assert.equal(JSON.stringify(p.snapshot().members), frozen, "the failed run stayed frozen");
   assert.equal(minds.stats().calls, callsBefore, "no further model calls after failure");
+  assert.equal(JSON.stringify(minds.statuses()), statusesBefore, "late reply did not mutate crew-panel mind state after failure");
   // and a restart discards the stale reply via the generation bump
   minds.newPuzzle(60);
   const p2 = new Expedition(CREW, 7);
@@ -280,4 +282,71 @@ test("a reply in flight when the budget runs out cannot mutate the failed run (P
   await flush();
   const pip = minds.statuses().find((q) => q.name === "Pip")!;
   assert.notEqual(pip.lastReason, "late answer", "stale pre-failure reply did not carry into the restart");
+});
+
+test("carried crates never leak ridge-column coordinates into prompts (review repro)", async () => {
+  // sharing OFF: Pip finds the pass and uses it privately. While he carries a
+  // crate through it, other miis must see the crate as carried - never its
+  // live coordinates (which would sit on ridge tiles).
+  const clock = { t: 0 };
+  const p = new Expedition(CREW, 7);
+  p.setSharing(false);
+  const caller = mindCaller(cooperative);
+  const minds = new PassMinds(caller, { now: () => clock.t });
+  p.setController(minds);
+  const [rx0, rx1] = [p.layout.rx0, p.layout.rx1];
+  let sawCrateOnRidge = false;
+  let t = 0;
+  const dt = 0.05;
+  while (t < 900 && p.status === "running") {
+    for (let i = 0; i < 20 && p.status === "running"; i++) {
+      p.tick(dt); t += dt;
+      if (p.crates.some((c) => !c.delivered && c.pos.x >= rx0 && c.pos.x <= rx1 + 0.5)) sawCrateOnRidge = true;
+    }
+    clock.t += 2000;
+    await flush();
+  }
+  assert.equal(p.status, "complete");
+  assert.equal(p.snapshot().pass.sharedBy, null, "pass stayed private (sharing off)");
+  assert.equal(p.snapshot().pass.foundByAnyone, true, "Pip found the pass");
+  assert.ok(sawCrateOnRidge, "a crate was carried across ridge tiles during the run");
+  const carriedLines: string[] = [];
+  for (const q of caller.prompts) {
+    for (const line of q.prompt.split("\n")) {
+      if (!line.startsWith("- crate-")) continue;
+      const m = /at \((-?\d+),(-?\d+)\)/.exec(line);
+      if (m) {
+        assert.ok(Number(m[1]) > rx1, `${q.me} saw crate coordinates on/near the ridge: ${line}`);
+      } else if (line.includes("being carried")) {
+        carriedLines.push(line);
+      }
+    }
+  }
+  assert.ok(carriedLines.length > 0, "carried crates were rendered as carried, without coordinates");
+});
+
+test("the budget wall latches in the same tick - no walk, delivery or win after it", async () => {
+  const clock = { t: 10_000 };
+  const p = new Expedition(CREW, 7);
+  const caller = mindCaller(cooperative);
+  const minds = new PassMinds(caller, { now: () => clock.t, maxCalls: 6 }); // enough to be mid-run when the wall hits
+  p.setController(minds);
+  let sawWall = false;
+  for (let i = 0; i < 20000 && p.status !== "failed"; i++) {
+    const posBefore = p.snapshot().members.map((m) => [m.x, m.y]);
+    const delivered = p.deliveredCount();
+    p.tick(0.05);
+    clock.t += 2000;
+    await flush();
+    if (minds.budgetExhausted() && !sawWall) {
+      sawWall = true;
+      assert.equal(p.status, "failed", "failure latched in the same tick as the exhaustion attempt");
+      // positions and deliveries are the advance mutations: none after the wall
+      // (a paid decision applied earlier in the same dispatch round is the
+      // final authorized call result, not a post-wall advance)
+      assert.deepEqual(p.snapshot().members.map((m) => [m.x, m.y]), posBefore, "no member moved after the wall");
+      assert.equal(p.deliveredCount(), delivered, "no delivery landed after the wall");
+    }
+  }
+  assert.ok(sawWall, "the wall was hit");
 });

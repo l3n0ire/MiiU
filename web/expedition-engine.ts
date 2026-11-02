@@ -92,8 +92,10 @@ export interface MemberView {
   delivered: number;
   total: number;
   crates: {
-    id: string; x: number; y: number;
+    id: string;
+    x: number | null; y: number | null; // null while carried: live positions must not leak routes
     claimedBy: string | null; delivered: boolean;
+    carriedBy: string | null; // carrier's name while the crate is on the move
     routeTiles: number | null; // one-way path length with THIS mii's knowledge
   }[];
   camp: Vec;
@@ -116,6 +118,7 @@ export interface ExpeditionController {
   applied?(memberId: string, d: ExpeditionDecision): void;
   rejected?(memberId: string, d: ExpeditionDecision, why: string): void;
   budgetExhausted?(): boolean;
+  runFailed?(): void; // the run just failed on the budget wall - freeze minds, discard late replies
 }
 
 export interface ExpeditionSnapshot {
@@ -362,11 +365,18 @@ export class Expedition {
         .map((o) => ({ id: o.id, name: o.name, free: this.free(o), x: o.pos.x, y: o.pos.y })),
       delivered: this.deliveredCount(),
       total: this.crates.length,
-      crates: this.crates.map((c) => ({
-        id: c.id, x: c.pos.x, y: c.pos.y,
-        claimedBy: c.claimedBy, delivered: c.delivered,
-        routeTiles: c.delivered ? null : this.pathLen(memberId, m.pos, c.pos),
-      })),
+      crates: this.crates.map((c) => {
+        const carrier = this.members.find((o) => o.state === "carrying" && o.crate === c.id);
+        return {
+          id: c.id,
+          // a crate on the move sits where its carrier walks - printing those
+          // coordinates would leak a private route (e.g. the unshared pass)
+          x: carrier ? null : c.pos.x, y: carrier ? null : c.pos.y,
+          claimedBy: c.claimedBy, delivered: c.delivered,
+          carriedBy: carrier ? carrier.name : null,
+          routeTiles: c.delivered || carrier ? null : this.pathLen(memberId, m.pos, c.pos),
+        };
+      }),
       camp: this.layout.camp,
       detour: { x: this.layout.rx0, y: this.layout.detourTop ? 0 : EXP_H - 1 },
       passIKnow: iKnow
@@ -479,14 +489,16 @@ export class Expedition {
     }
   }
 
+  private failBudget() {
+    this.status = "failed";
+    this.failureReason = "the model call budget for this puzzle was used up";
+    this.say("Puzzle", "The agents failed to accomplish the task: the model call budget ran out. Restart with a different limit to try again.");
+    this.controller?.runFailed?.();
+  }
+
   private dispatch() {
     if (this.status !== "running") return;
-    if (this.controller?.budgetExhausted?.()) {
-      this.status = "failed";
-      this.failureReason = "the model call budget for this puzzle was used up";
-      this.say("Puzzle", "The agents failed to accomplish the task: the model call budget ran out. Restart with a different limit to try again.");
-      return;
-    }
+    if (this.controller?.budgetExhausted?.()) { this.failBudget(); return; }
     for (const m of this.members) {
       if (!this.free(m)) continue;
       if (!this.controller) { this.builtin(m); continue; }
@@ -497,6 +509,8 @@ export class Expedition {
       if (res.ok) this.controller.applied?.(m.id, out);
       else this.controller.rejected?.(m.id, out, res.why ?? "rejected");
     }
+    // the wall may have been hit mid-round: latch BEFORE any further advance
+    if (this.controller?.budgetExhausted?.()) this.failBudget();
   }
 
   private step(m: Member, dt: number): boolean {
@@ -522,6 +536,7 @@ export class Expedition {
   tick(dt: number) {
     if (this.paused || dt <= 0) return;
     if (this.status !== "running") return;
+    if (this.controller?.budgetExhausted?.()) { this.failBudget(); return; } // latch on the next tick, not the next dispatch round
     this.t += dt;
     this.elapsed += dt * this.speed;
     for (const m of this.members) if (m.bubbleUntil < this.t) m.bubble = null;
