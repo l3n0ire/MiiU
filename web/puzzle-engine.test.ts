@@ -115,3 +115,26 @@ test("water blocks movement until a piece fills the gap cell", () => {
   assert.ok(p.walkable(l.flag.x + 0.5, l.flag.y + 0.5), "flag tile is walkable");
   assert.ok(p.walkable(l.riverX0 - 1 + 0.5, l.bridgeY + 0.5), "near bank is walkable");
 });
+
+test("complete means everyone crossed: crossing phase comes first", () => {
+  const p = new BridgePuzzle(CREW, 7);
+  let sawCrossingPhase = false;
+  let t = 0;
+  while (t < 300 && p.status !== "complete") {
+    p.tick(0.1);
+    t += 0.1;
+    const s = p.snapshot();
+    if (s.status === "crossing") {
+      sawCrossingPhase = true;
+      // During the crossing phase the win is not declared yet: at least one
+      // crew member is still short of the flag.
+      assert.ok(s.crossedCount < s.members.length, "crossing phase must end before all are across");
+      assert.ok(s.members.some((m) => m.state === "crossing"), "someone still en route");
+    }
+  }
+  assert.ok(sawCrossingPhase, "a crossing phase should exist between bridge-built and complete");
+  const s = p.snapshot();
+  assert.equal(s.status, "complete");
+  assert.equal(s.crossedCount, s.members.length, "complete only once every member crossed");
+  assert.ok(s.members.every((m) => m.state === "celebrating"), "everyone celebrating at the flag");
+});

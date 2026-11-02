@@ -196,13 +196,16 @@ function draw() {
   $("puzzleStatus").textContent = s.paused
     ? `Paused - puzzle #${s.seed}`
     : s.status === "complete"
-      ? `Bridge complete! - puzzle #${s.seed}`
-      : `Building the bridge - ${s.placedCount}/${s.totalPieces} pieces placed - puzzle #${s.seed}`;
+      ? `Bridge complete - everyone across! - puzzle #${s.seed}`
+      : s.status === "crossing"
+        ? `Bridge built - crew crossing - ${s.crossedCount}/${s.members.length} across - puzzle #${s.seed}`
+        : `Building the bridge - ${s.placedCount}/${s.totalPieces} pieces placed - puzzle #${s.seed}`;
   ($("pauseBtn") as HTMLButtonElement).textContent = s.paused ? "Resume" : "Pause";
 }
 
 function nowLine(s: ReturnType<BridgePuzzle["snapshot"]>): string {
   if (s.status === "complete") return "Bridge built - the whole crew made it across.";
+  if (s.status === "crossing") return `Bridge built - the crew is crossing (${s.crossedCount}/${s.members.length} across).`;
   const byId = new Map(s.members.map((m) => [m.id, m]));
   const placing = s.members.find((m) => m.state === "placing");
   if (placing) return `${placing.name} is placing a ${placing.carrying ?? "piece"} into the bridge.`;

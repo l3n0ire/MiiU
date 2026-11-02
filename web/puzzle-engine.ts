@@ -73,7 +73,7 @@ export interface PuzzleLayout {
 export interface PuzzleSnapshot {
   t: number;
   elapsed: number;
-  status: "building" | "complete";
+  status: "building" | "crossing" | "complete";
   paused: boolean;
   speed: number;
   seed: number;
@@ -85,6 +85,7 @@ export interface PuzzleSnapshot {
   bridge: { x: number; y: number; filled: boolean }[];
   flag: Vec;
   placedCount: number;
+  crossedCount: number;
   totalPieces: number;
   assists: number;
   log: ChatterLine[];
@@ -170,7 +171,10 @@ export class BridgePuzzle {
   elapsed = 0; // speed-scaled active seconds, for the completion stat
   speed = 1;
   paused = false;
-  status: "building" | "complete" = "building";
+  // building: pieces still unplaced. crossing: bridge done, crew en route to
+  // the flag. complete: EVERY member has crossed - never before, so the win
+  // banner's "the whole crew made it across" is literally true.
+  status: "building" | "crossing" | "complete" = "building";
   log: ChatterLine[] = [];
   assists = 0;
   readonly seed: number;
@@ -353,7 +357,8 @@ export class BridgePuzzle {
       if (lead) this.say(lead, this.pick(CHATTER.beamPlaced));
     } else if (lead) this.say(lead, this.pick(CHATTER.place));
     if (this.placedCount() === this.pieces.length) {
-      // Bridge complete: everyone crosses to the flag area.
+      // Bridge built: crossing phase starts, everyone heads to the flag area.
+      this.status = "crossing";
       const f = this.layout.flag;
       const spots = [f, { x: f.x, y: f.y - 1 }, { x: f.x, y: f.y + 1 }, { x: f.x + 1, y: f.y }]
         .filter((s) => this.walkable(s.x + 0.5, s.y + 0.5));
@@ -458,7 +463,7 @@ export class BridgePuzzle {
             m.state = "celebrating";
             if (!this.crossed.has(m.id)) {
               this.crossed.add(m.id);
-              if (this.status === "building") this.status = "complete";
+              if (this.crossed.size === this.members.length) this.status = "complete";
             }
           }
           break;
@@ -495,6 +500,7 @@ export class BridgePuzzle {
       })).sort((a, b) => a.x - b.x),
       flag: this.layout.flag,
       placedCount: this.placedCount(),
+      crossedCount: this.crossed.size,
       totalPieces: this.pieces.length,
       assists: this.assists,
       log: this.log.slice(-50),
