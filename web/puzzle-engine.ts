@@ -1,18 +1,25 @@
 // Bridge puzzle engine (cooperative goal mode): pure logic, no DOM, no LLM.
-// The crew's planning is code-driven (a simple task-assignment state machine),
-// NOT learned or model-reasoned - the point of this mode is watching the Miis
-// carry, help and place pieces toward a visible goal. Conversation-style chatter
-// is emitted as short template lines and is hidden by default in the UI.
+//
+// DECISION MECHANISM (read before claiming what this is):
+// A puzzle layout is GENERATED per run from a seed (river position, bridge row,
+// piece kinds/homes, flag). The crew's decisions come from a feasibility-driven
+// task assigner, not a scripted sequence:
+//   - which pieces CAN be placed right now is discovered from walkability
+//     (a gap cell's stand cell only becomes reachable once the cell before it
+//     is filled), so placement order is emergent, not hardcoded;
+//   - who does what is assigned greedily by distance among free members and
+//     re-evaluated every tick;
+//   - the two-carrier rule on beams is a mechanic, and helper recruitment is
+//     dynamic (nearest other free member).
+// It is NOT a general planner with backtracking, NOT an LLM, NOT learned
+// behavior, and the Miis do not negotiate. Chatter is template lines and is
+// hidden by default in the UI.
 
 export interface Vec { x: number; y: number }
 export interface CrewMember { id: string; name: string; color: string }
 
 export const PUZZLE_W = 20;
 export const PUZZLE_H = 15;
-export const RIVER_X0 = 9; // first water column
-export const RIVER_X1 = 11; // last water column
-export const BRIDGE_Y = 7; // row the bridge crosses on
-export const FLAG: Vec = { x: 16, y: 7 };
 
 const BASE_SPEED = 3; // tiles per second at speed=1
 const PICKUP_DIST = 0.55;
@@ -26,13 +33,13 @@ export interface Piece {
   id: string;
   kind: PieceKind;
   heavy: boolean; // beams need two carriers
-  pos: Vec; // current tile (idle) or live position (carried)
-  home: Vec; // where it starts
-  target: Vec; // bridge cell it must fill
+  pos: Vec;
+  home: Vec;
+  target: Vec; // gap cell this piece fills
   state: PieceState;
-  lead: string | null; // carrier member id
-  helper: string | null; // second carrier for heavy pieces
-  placeT: number; // countdown while placing
+  lead: string | null;
+  helper: string | null;
+  placeT: number;
 }
 
 export type MemberState =
@@ -44,15 +51,24 @@ export interface Member {
   name: string;
   color: string;
   pos: Vec;
-  path: Vec[]; // tile-center waypoints
+  path: Vec[];
   state: MemberState;
-  piece: string | null; // piece id being fetched/carried
+  piece: string | null;
   bubble: string | null;
-  bubbleUntil: number; // sim seconds
+  bubbleUntil: number;
   wanderT: number;
 }
 
 export interface ChatterLine { t: number; speaker: string; text: string }
+
+export interface PuzzleLayout {
+  riverX0: number;
+  riverX1: number;
+  bridgeY: number;
+  flag: Vec;
+  pieces: { id: string; kind: PieceKind; heavy: boolean; home: Vec; target: Vec }[];
+  spawns: Vec[];
+}
 
 export interface PuzzleSnapshot {
   t: number;
@@ -60,13 +76,17 @@ export interface PuzzleSnapshot {
   status: "building" | "complete";
   paused: boolean;
   speed: number;
+  seed: number;
+  riverX0: number;
+  riverX1: number;
+  bridgeY: number;
   members: (CrewMember & { x: number; y: number; state: MemberState; carrying: PieceKind | null; bubble: string | null })[];
   pieces: { id: string; kind: PieceKind; heavy: boolean; x: number; y: number; state: PieceState; carriers: string[] }[];
   bridge: { x: number; y: number; filled: boolean }[];
   flag: Vec;
   placedCount: number;
   totalPieces: number;
-  assists: number; // heavy lifts completed
+  assists: number;
   log: ChatterLine[];
 }
 
@@ -83,6 +103,55 @@ function mulberry32(seed: number) {
 
 const center = (v: Vec): Vec => ({ x: Math.floor(v.x) + 0.5, y: Math.floor(v.y) + 0.5 });
 const dist = (a: Vec, b: Vec) => Math.hypot(a.x - b.x, a.y - b.y);
+
+// Generate a solvable layout from a seed: a 3-wide river somewhere in the
+// middle, a bridge row, one piece per gap cell (at least one heavy beam and
+// one light block, so cooperation is always required), pieces scattered on the
+// near bank, flag on the far bank.
+export function generateLayout(seed: number): PuzzleLayout {
+  const rng = mulberry32(seed * 2654435761 + 97);
+  const riverX0 = 8 + Math.floor(rng() * 4); // 8..11
+  const riverX1 = riverX0 + 2;
+  const bridgeY = 4 + Math.floor(rng() * 8); // 4..11
+  const flag = {
+    x: Math.min(PUZZLE_W - 2, riverX1 + 2 + Math.floor(rng() * 3)),
+    y: Math.max(1, Math.min(PUZZLE_H - 2, bridgeY + Math.floor(rng() * 3) - 1)),
+  };
+  // Piece kinds: 3 gap cells; combos always include >=1 beam and >=1 block.
+  const combos: PieceKind[][] = [
+    ["block", "beam", "block"],
+    ["block", "beam", "beam"],
+    ["beam", "block", "beam"],
+  ];
+  const kinds = combos[Math.floor(rng() * combos.length)];
+  // Homes: spread random spots on the near bank, away from the bank edge.
+  const homes: Vec[] = [];
+  let guard = 0;
+  while (homes.length < 3 && guard++ < 500) {
+    const h = {
+      x: 1 + Math.floor(rng() * Math.max(2, riverX0 - 3)),
+      y: 1 + Math.floor(rng() * (PUZZLE_H - 2)),
+    };
+    if (homes.every((o) => Math.abs(o.x - h.x) + Math.abs(o.y - h.y) >= 3)) homes.push(h);
+  }
+  while (homes.length < 3) homes.push({ x: 2 + homes.length * 2, y: 3 + homes.length * 3 });
+  const pieces = kinds.map((kind, i) => ({
+    id: `${kind}-${i}`,
+    kind,
+    heavy: kind === "beam",
+    home: homes[i],
+    target: { x: riverX0 + i, y: bridgeY },
+  }));
+  const spawns: Vec[] = [];
+  guard = 0;
+  while (spawns.length < 4 && guard++ < 500) {
+    const s = { x: Math.floor(rng() * Math.max(2, riverX0 - 2)), y: Math.floor(rng() * PUZZLE_H) };
+    if (spawns.every((o) => Math.abs(o.x - s.x) + Math.abs(o.y - s.y) >= 2) &&
+        homes.every((o) => Math.abs(o.x - s.x) + Math.abs(o.y - s.y) >= 2)) spawns.push(s);
+  }
+  while (spawns.length < 4) spawns.push({ x: 0, y: spawns.length * 3 });
+  return { riverX0, riverX1, bridgeY, flag, pieces, spawns };
+}
 
 const CHATTER = {
   claimBlock: ["I'll grab this block!", "Got this one!", "On it - block coming through!"],
@@ -104,15 +173,18 @@ export class BridgePuzzle {
   status: "building" | "complete" = "building";
   log: ChatterLine[] = [];
   assists = 0;
+  readonly seed: number;
+  readonly layout: PuzzleLayout;
   private rng: () => number;
   private crossed = new Set<string>();
 
   constructor(crew: CrewMember[], seed = 7) {
+    this.seed = seed;
     this.rng = mulberry32(seed);
-    const spawns: Vec[] = [{ x: 2, y: 6 }, { x: 2, y: 8 }, { x: 1, y: 7 }, { x: 3, y: 7 }];
+    this.layout = generateLayout(seed);
     this.members = crew.slice(0, 4).map((c, i) => ({
       ...c,
-      pos: center(spawns[i % spawns.length]),
+      pos: center(this.layout.spawns[i % this.layout.spawns.length]),
       path: [],
       state: "idle",
       piece: null,
@@ -120,19 +192,21 @@ export class BridgePuzzle {
       bubbleUntil: 0,
       wanderT: 1 + i * 0.7,
     }));
-    // Two light blocks fill the outer gap cells; one heavy beam fills the middle.
-    this.pieces = [
-      { id: "block-a", kind: "block", heavy: false, home: { x: 4, y: 3 }, pos: center({ x: 4, y: 3 }), target: { x: RIVER_X0, y: BRIDGE_Y }, state: "idle", lead: null, helper: null, placeT: 0 },
-      { id: "beam", kind: "beam", heavy: true, home: { x: 3, y: 11 }, pos: center({ x: 3, y: 11 }), target: { x: RIVER_X0 + 1, y: BRIDGE_Y }, state: "idle", lead: null, helper: null, placeT: 0 },
-      { id: "block-b", kind: "block", heavy: false, home: { x: 6, y: 12 }, pos: center({ x: 6, y: 12 }), target: { x: RIVER_X1, y: BRIDGE_Y }, state: "idle", lead: null, helper: null, placeT: 0 },
-    ];
+    this.pieces = this.layout.pieces.map((p) => ({
+      ...p,
+      pos: center(p.home),
+      state: "idle",
+      lead: null,
+      helper: null,
+      placeT: 0,
+    }));
   }
 
   placedCount(): number { return this.pieces.filter((p) => p.state === "placed").length; }
 
   isWater(x: number, y: number): boolean {
     const xi = Math.floor(x), yi = Math.floor(y);
-    if (xi < RIVER_X0 || xi > RIVER_X1 || yi < 0 || yi >= PUZZLE_H) return false;
+    if (xi < this.layout.riverX0 || xi > this.layout.riverX1 || yi < 0 || yi >= PUZZLE_H) return false;
     return true;
   }
 
@@ -140,11 +214,9 @@ export class BridgePuzzle {
     const xi = Math.floor(x), yi = Math.floor(y);
     if (xi < 0 || yi < 0 || xi >= PUZZLE_W || yi >= PUZZLE_H) return false;
     if (!this.isWater(x, y)) return true;
-    // Water is walkable only where a piece has been placed on the bridge row.
-    return yi === BRIDGE_Y && this.pieces.some((p) => p.state === "placed" && p.target.x === xi);
+    return yi === this.layout.bridgeY && this.pieces.some((p) => p.state === "placed" && p.target.x === xi);
   }
 
-  // BFS over tile centers; returns waypoints excluding start, including goal.
   private findPath(from: Vec, to: Vec): Vec[] | null {
     const s = { x: Math.floor(from.x), y: Math.floor(from.y) };
     const g = { x: Math.floor(to.x), y: Math.floor(to.y) };
@@ -201,14 +273,15 @@ export class BridgePuzzle {
 
   private member(id: string | null): Member | undefined { return this.members.find((m) => m.id === id); }
 
+  // Feasibility-driven assignment: only pieces whose stand cell is reachable
+  // right now can be claimed, so the crew discovers the workable order from
+  // the layout instead of following a scripted one. Nearest free member leads;
+  // beams recruit the nearest other free member as helper.
   private assign() {
-    // Pieces must be placed in bridge order: each target's stand cell only
-    // becomes reachable once the previous gap cell is filled.
     for (const p of this.pieces) {
       if (p.state !== "idle" && p.state !== "claimed") continue;
-      const standFrom = this.members[0]?.pos ?? { x: 1, y: BRIDGE_Y };
-      // Assignment feasibility: could anybody stand next to the target right now?
-      if (!this.standCell(p, standFrom)) continue;
+      const standFrom = this.members[0]?.pos ?? { x: 1, y: this.layout.bridgeY };
+      if (!this.standCell(p, standFrom)) continue; // not placeable yet
       const freeMembers = this.members.filter((m) => this.free(m));
       if (!freeMembers.length) continue;
       const byNear = [...freeMembers].sort((a, b) => dist(a.pos, p.pos) - dist(b.pos, p.pos));
@@ -228,7 +301,7 @@ export class BridgePuzzle {
           lead.path = this.findPath(lead.pos, p.pos) ?? [];
           this.say(lead, this.pick(CHATTER.claimBeam));
         }
-        if (!p.helper && byNear.length > (p.lead && freeMembers.some((m) => m.id === p.lead) ? 0 : -1)) {
+        if (!p.helper) {
           const helper = freeMembers.find((m) => m.id !== p.lead);
           if (helper) {
             p.helper = helper.id;
@@ -242,7 +315,6 @@ export class BridgePuzzle {
   }
 
   private step(m: Member, dt: number): boolean {
-    // Move along waypoints; true when the path is finished.
     let budget = BASE_SPEED * this.speed * dt;
     while (budget > 0 && m.path.length) {
       const next = m.path[0];
@@ -281,11 +353,13 @@ export class BridgePuzzle {
       if (lead) this.say(lead, this.pick(CHATTER.beamPlaced));
     } else if (lead) this.say(lead, this.pick(CHATTER.place));
     if (this.placedCount() === this.pieces.length) {
-      // Bridge complete: everyone crosses to the flag.
-      const spots = [FLAG, { x: 16, y: 6 }, { x: 16, y: 8 }, { x: 17, y: 7 }];
+      // Bridge complete: everyone crosses to the flag area.
+      const f = this.layout.flag;
+      const spots = [f, { x: f.x, y: f.y - 1 }, { x: f.x, y: f.y + 1 }, { x: f.x + 1, y: f.y }]
+        .filter((s) => this.walkable(s.x + 0.5, s.y + 0.5));
       this.members.forEach((m, i) => {
         m.state = "crossing"; m.piece = null;
-        const spot = spots[i % spots.length];
+        const spot = spots[i % spots.length] ?? f;
         m.path = this.findPath(m.pos, { x: spot.x + 0.5, y: spot.y + 0.5 }) ?? [];
       });
       const first = this.members[0];
@@ -307,8 +381,8 @@ export class BridgePuzzle {
           m.wanderT -= dt * this.speed;
           if (m.wanderT <= 0) {
             m.wanderT = 2 + this.rng() * 3;
-            // Idle members mill around the left-bank staging area.
-            const spot = { x: 1 + this.rng() * 6, y: 4 + this.rng() * 7 };
+            const rx = this.layout.riverX0;
+            const spot = { x: 1 + this.rng() * Math.max(1, rx - 3), y: 1 + this.rng() * (PUZZLE_H - 2) };
             const path = this.findPath(m.pos, { x: Math.floor(spot.x) + 0.5, y: Math.floor(spot.y) + 0.5 });
             if (path) { m.path = path; m.state = "wandering"; }
           }
@@ -324,7 +398,6 @@ export class BridgePuzzle {
           if (this.step(m, dt) || dist(m.pos, p.pos) < PICKUP_DIST) {
             if (!p.heavy) { this.startCarry(p); }
             else {
-              // Heavy piece: wait at the beam until the helper arrives.
               m.state = "waiting";
               const helper = this.member(p.helper);
               if (helper && dist(helper.pos, p.pos) < PICKUP_DIST) this.startCarry(p);
@@ -352,14 +425,12 @@ export class BridgePuzzle {
           if (!p) { m.state = "idle"; break; }
           if (p.lead === m.id) {
             const done = this.step(m, dt);
-            p.pos = { ...m.pos }; // the piece rides with the lead carrier
+            p.pos = { ...m.pos };
             const helper = p.helper ? this.member(p.helper) : null;
             if (done) {
               if (!helper || dist(helper.pos, m.pos) < HELPER_NEAR) { m.state = "placing"; p.placeT = PLACE_TIME; }
-              // else: lead holds position at the stand cell until the helper catches up
             }
           } else {
-            // Helper: stay glued to the lead while carrying together.
             const lead = this.member(p.lead);
             if (lead) {
               const d = dist(m.pos, lead.pos);
@@ -404,6 +475,10 @@ export class BridgePuzzle {
       status: this.status,
       paused: this.paused,
       speed: this.speed,
+      seed: this.seed,
+      riverX0: this.layout.riverX0,
+      riverX1: this.layout.riverX1,
+      bridgeY: this.layout.bridgeY,
       members: this.members.map((m) => ({
         id: m.id, name: m.name, color: m.color,
         x: m.pos.x, y: m.pos.y, state: m.state,
@@ -415,11 +490,10 @@ export class BridgePuzzle {
         x: p.pos.x, y: p.pos.y, state: p.state,
         carriers: [p.lead, p.helper].filter((v): v is string => !!v && p.state === "carried"),
       })),
-      bridge: [RIVER_X0, RIVER_X0 + 1, RIVER_X1].map((x) => ({
-        x, y: BRIDGE_Y,
-        filled: this.pieces.some((p) => p.state === "placed" && p.target.x === x),
-      })),
-      flag: FLAG,
+      bridge: this.pieces.map((p) => ({
+        x: p.target.x, y: p.target.y, filled: p.state === "placed",
+      })).sort((a, b) => a.x - b.x),
+      flag: this.layout.flag,
       placedCount: this.placedCount(),
       totalPieces: this.pieces.length,
       assists: this.assists,

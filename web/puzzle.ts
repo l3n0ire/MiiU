@@ -1,7 +1,9 @@
 // Bridge puzzle page: renders the cooperative bridge-building scene from
 // puzzle-engine.ts on a canvas. Chatter (short template lines from the engine)
 // is hidden by default - the scene is meant to read from actions alone.
-import { BridgePuzzle, PUZZLE_W, PUZZLE_H, RIVER_X0, RIVER_X1, BRIDGE_Y, FLAG, type PuzzleSnapshot, type CrewMember } from "./puzzle-engine.ts";
+// Icons are inline SVG/text so they render identically everywhere (no emoji
+// font dependency).
+import { BridgePuzzle, PUZZLE_W, PUZZLE_H, type CrewMember } from "./puzzle-engine.ts";
 import { migrateWorld, seedWorld } from "../server/world.ts";
 
 const TILE = 40;
@@ -28,13 +30,15 @@ function loadCrew(): CrewMember[] {
   return crew.slice(0, 4).map((c) => ({ id: c.id, name: c.name, color: c.color }));
 }
 
-let puzzle = new BridgePuzzle(loadCrew());
+let seed = 7;
+let puzzle = new BridgePuzzle(loadCrew(), seed);
 let showChatter = false;
 let confetti: { x: number; y: number; vx: number; vy: number; color: string; t: number }[] = [];
 let celebrated = false;
 
-function reset() {
-  puzzle = new BridgePuzzle(loadCrew());
+function reset(newSeed: boolean) {
+  if (newSeed) seed = Math.floor(Math.random() * 100000);
+  puzzle = new BridgePuzzle(loadCrew(), seed);
   confetti = [];
   celebrated = false;
   $("winBanner").style.display = "none";
@@ -49,36 +53,49 @@ function renderLog() {
   log.scrollTop = log.scrollHeight;
 }
 
+// Action labels and bubbles are small; when members cluster (e.g. both ends of
+// a beam) their labels would overlap. Track drawn rects per frame and nudge up.
+const drawn: { x0: number; y0: number; x1: number; y1: number }[] = [];
+function fits(x0: number, y0: number, x1: number, y1: number): boolean {
+  return drawn.every((r) => x1 < r.x0 || x0 > r.x1 || y1 < r.y0 || y0 > r.y1);
+}
+function labelY(cx: number, base: number, w: number, h: number): number {
+  let y = base;
+  while (!fits(cx - w / 2, y - h, cx + w / 2, y) && y > 20) y -= h + 2;
+  drawn.push({ x0: cx - w / 2, y0: y - h, x1: cx + w / 2, y1: y });
+  return y;
+}
+
 function draw() {
+  drawn.length = 0;
   const s = puzzle.snapshot();
+  const riverX0 = s.riverX0, riverX1 = s.riverX1, flag = s.flag;
   // banks
   ctx.fillStyle = "#a8d8a0";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // subtle checker for grass texture
   ctx.fillStyle = "rgba(0,0,0,0.03)";
   for (let x = 0; x < PUZZLE_W; x++) for (let y = 0; y < PUZZLE_H; y++) if ((x + y) % 2 === 0) ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
   // river
-  const wave = Math.sin(s.t * 2) * 3;
   ctx.fillStyle = "#6db6e8";
-  ctx.fillRect(RIVER_X0 * TILE, 0, (RIVER_X1 - RIVER_X0 + 1) * TILE, canvas.height);
+  ctx.fillRect(riverX0 * TILE, 0, (riverX1 - riverX0 + 1) * TILE, canvas.height);
   ctx.strokeStyle = "rgba(255,255,255,0.35)";
   ctx.lineWidth = 2;
   for (let y = 0; y < PUZZLE_H; y++) {
     ctx.beginPath();
-    for (let x = RIVER_X0; x <= RIVER_X1 + 1; x++) {
-      const px = x * TILE, py = y * TILE + TILE / 2 + Math.sin(s.t * 2 + x + y) * 3 + wave * 0.2;
-      if (x === RIVER_X0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    for (let x = riverX0; x <= riverX1 + 1; x++) {
+      const px = x * TILE, py = y * TILE + TILE / 2 + Math.sin(s.t * 2 + x + y) * 3;
+      if (x === riverX0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
     }
     ctx.stroke();
   }
   // goal flag
-  const fx = (FLAG.x + 0.5) * TILE, fy = (FLAG.y + 0.5) * TILE;
+  const fx = (flag.x + 0.5) * TILE, fy = (flag.y + 0.5) * TILE;
   ctx.strokeStyle = "#5a4a3a";
   ctx.lineWidth = 3;
   ctx.beginPath(); ctx.moveTo(fx, fy + 14); ctx.lineTo(fx, fy - 16); ctx.stroke();
   ctx.fillStyle = "#ff7a59";
   ctx.beginPath(); ctx.moveTo(fx, fy - 16); ctx.lineTo(fx + 16, fy - 10); ctx.lineTo(fx, fy - 4); ctx.closePath(); ctx.fill();
-  // bridge cells: dashed outline where a piece is missing
+  // unfilled gap cells
   for (const cell of s.bridge) {
     if (cell.filled) continue;
     ctx.strokeStyle = "rgba(255,255,255,0.8)";
@@ -102,7 +119,6 @@ function draw() {
       ctx.strokeStyle = "#7a4a20";
       ctx.lineWidth = 2;
       ctx.strokeRect(px - 18, py - 6, 36, 12);
-      // two handle dots hint it takes two carriers
       ctx.fillStyle = "#7a4a20";
       ctx.beginPath(); ctx.arc(px - 10, py, 2.5, 0, 7); ctx.arc(px + 10, py, 2.5, 0, 7); ctx.fill();
     }
@@ -116,37 +132,39 @@ function draw() {
     ctx.strokeStyle = "rgba(0,0,0,0.25)";
     ctx.lineWidth = 1.5;
     ctx.stroke();
-    // initial
     ctx.fillStyle = "#fff";
     ctx.font = "bold 11px ui-rounded, system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(m.name.slice(0, 1).toUpperCase(), mx, my - 1 - bounce);
-    // name
     ctx.fillStyle = "rgba(45,42,38,0.85)";
     ctx.font = "10px ui-rounded, system-ui, sans-serif";
-    ctx.fillText(m.name, mx, my + 16 - bounce);
-    // action label: what they're doing, always visible
+    const nameW = ctx.measureText(m.name).width;
+    const nameY = labelY(mx, my + 16 - bounce, nameW, 11);
+    ctx.fillText(m.name, mx, nameY);
+    // action label: what they're doing, always visible (except celebrating)
     const labels: Record<string, string> = {
       fetching: "fetching", waiting: "needs help!", helping: "going to help",
       carrying: m.carrying === "beam" ? "carrying together" : "carrying",
-      placing: "placing", crossing: "crossing!", celebrating: "🎉",
+      placing: "placing", crossing: "crossing!",
     };
     const label = labels[m.state];
     if (label) {
-      ctx.fillStyle = "rgba(45,42,38,0.6)";
       ctx.font = "italic 9px ui-rounded, system-ui, sans-serif";
-      ctx.fillText(label, mx, my + 26 - bounce);
+      const lw = ctx.measureText(label).width;
+      const ly = labelY(mx, nameY + 11, lw, 10);
+      ctx.fillStyle = "rgba(45,42,38,0.6)";
+      ctx.fillText(label, mx, ly);
     }
     // chatter bubble: only when the user opted in
     if (showChatter && m.bubble) {
       ctx.font = "11px ui-rounded, system-ui, sans-serif";
       const w = ctx.measureText(m.bubble).width + 14;
       const bx = Math.min(Math.max(mx - w / 2, 4), canvas.width - w - 4);
-      const by = my - 44 - bounce;
+      const by = labelY(mx, my - 46 - bounce, w, 18) - 8;
       ctx.fillStyle = "rgba(255,250,242,0.95)";
       ctx.strokeStyle = "rgba(0,0,0,0.15)";
       ctx.beginPath();
-      (ctx as CanvasRenderingContext2D).roundRect(bx, by - 14, w, 20, 8);
+      ctx.roundRect(bx, by - 14, w, 20, 8);
       ctx.fill(); ctx.stroke();
       ctx.fillStyle = "#2d2a26";
       ctx.fillText(m.bubble, bx + w / 2, by);
@@ -172,12 +190,11 @@ function draw() {
     ctx.fillStyle = c.color;
     ctx.fillRect(c.x, c.y, 5, 5);
   }
-  // status line
   $("puzzleStatus").textContent = s.paused
-    ? "⏸ paused"
+    ? `Paused - puzzle #${s.seed}`
     : s.status === "complete"
-      ? "🌉 Bridge complete!"
-      : `Building the bridge - ${s.placedCount}/${s.totalPieces} pieces placed`;
+      ? `Bridge complete! - puzzle #${s.seed}`
+      : `Building the bridge - ${s.placedCount}/${s.totalPieces} pieces placed - puzzle #${s.seed}`;
   ($("pauseBtn") as HTMLButtonElement).textContent = s.paused ? "Resume" : "Pause";
 }
 
@@ -194,13 +211,14 @@ function frame(now: number) {
 }
 
 $("pauseBtn").addEventListener("click", () => { puzzle.paused = !puzzle.paused; });
-$("resetBtn").addEventListener("click", reset);
+$("restartBtn").addEventListener("click", () => reset(false));
+$("newBtn").addEventListener("click", () => reset(true));
 ($("speedRange") as HTMLInputElement).addEventListener("input", (e) => {
   puzzle.speed = Math.max(0.25, Math.min(4, Number((e.target as HTMLInputElement).value) || 1));
 });
 $("chatterBtn").addEventListener("click", () => {
   showChatter = !showChatter;
-  $("chatterBtn").textContent = showChatter ? "🙈 Hide chatter" : "💬 Show chatter";
+  $("chatterBtn").textContent = showChatter ? "Hide chatter" : "Show chatter";
   $("logPanel").style.display = showChatter ? "" : "none";
   if (showChatter) renderLog();
 });
