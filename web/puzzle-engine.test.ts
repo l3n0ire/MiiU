@@ -138,3 +138,17 @@ test("complete means everyone crossed: crossing phase comes first", () => {
   assert.equal(s.crossedCount, s.members.length, "complete only once every member crossed");
   assert.ok(s.members.every((m) => m.state === "celebrating"), "everyone celebrating at the flag");
 });
+test("a controller reporting failed() freezes the engine completely", () => {
+  const crew = [
+    { id: "a", name: "Pip", color: "#ff7a59" },
+    { id: "b", name: "Marlo", color: "#4a90d9" },
+    { id: "c", name: "Juniper", color: "#b36bd6" },
+    { id: "d", name: "Gus", color: "#3fb57a" },
+  ];
+  const p = new BridgePuzzle(crew, 7);
+  p.setController({ decide: () => "pending", failed: () => true });
+  const before = JSON.stringify(p.snapshot());
+  for (let i = 0; i < 600; i++) p.tick(0.05); // 30 sim-seconds
+  assert.equal(JSON.stringify(p.snapshot()), before, "no tick advances anything while failed");
+  assert.equal(p.status, "building");
+});

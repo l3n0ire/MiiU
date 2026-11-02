@@ -331,6 +331,9 @@ export class MindfulCrew implements CrewController {
     return true;
   };
 
+  // CrewController.failed: the engine freezes completely once the run failed.
+  failed(): boolean { return this.exhaustedFlag; }
+
   // True once a mind needed a call and the budget was gone. The crew stalls
   // (decide() has no built-in to offer for stalled minds, so the engine
   // waits); the UI turns this into the visible run failure.

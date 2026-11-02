@@ -485,8 +485,10 @@ function draw() {
   // "Now" line: the current action in plain readable text, outside the
   // canvas, so it stays legible on small screens where in-canvas labels shrink.
   $("nowLine").textContent = nowLine(s);
-  $("puzzleStatus").textContent = s.paused
-    ? `Paused - puzzle #${s.seed}`
+  $("puzzleStatus").textContent = minds?.exhausted && s.status !== "complete"
+    ? `Run failed - out of model calls - puzzle #${s.seed}`
+    : s.paused
+      ? `Paused - puzzle #${s.seed}`
     : s.status === "complete"
       ? `Bridge complete - everyone across! - puzzle #${s.seed}`
       : s.status === "crossing"

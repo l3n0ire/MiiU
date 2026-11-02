@@ -433,19 +433,14 @@ test("budget failure is terminal: no decisions, no progress, no completion after
   const caller = mindCaller(selfish);
   const crew = new MindfulCrew(caller, () => clock.t, undefined, 6);
   p.setController(crew);
-  await runWithMinds(p, crew, clock, 60);
-  assert.equal(crew.exhausted, true);
-  // let engine-side work that started before the failure settle out
-  await runWithMinds(p, crew, clock, 60);
-  const settled = p.decisionView();
-  const snap = (v: typeof settled) => JSON.stringify({
-    pieces: v.pieces.map((x) => [x.id, x.placed, x.claimed]),
-    inProgress: v.inProgress,
-  });
-  const before = snap(settled);
-  // simulate "Dismiss + Resume": the engine keeps ticking for a long while
+  // run until the exact moment the budget fails, mid-work if that is when it hits
+  let guard = 0;
+  while (!crew.exhausted && guard++ < 4000) { p.tick(0.05); clock.t += 100; await flush(); }
+  assert.equal(crew.exhausted, true, "budget fails mid-run");
+  const frozen = JSON.stringify(p.snapshot());
+  // simulate "Dismiss + Resume": the engine keeps getting ticked for a long while
   await runWithMinds(p, crew, clock, 120);
-  assert.equal(snap(p.decisionView()), before, "NOTHING moves after the failure - no resume into silent progress");
+  assert.equal(JSON.stringify(p.snapshot()), frozen, "NOTHING advances after the failure - no walking, placing, delivering or winning");
   assert.equal(caller.calls, 6, "no further calls");
   assert.notEqual(p.status, "complete", "a failed run cannot complete");
   for (const s of crew.statuses()) assert.notEqual(s.state, "fallback");

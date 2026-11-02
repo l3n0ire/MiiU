@@ -96,6 +96,10 @@ export type ControllerReply = AssignmentDecision[] | PartialReply | "pending" | 
 export interface CrewController {
   decide(view: DecisionView): ControllerReply;
   applied?(a: AssignmentDecision): void; // called for each decision the engine accepted
+  // true = the run was declared failed (e.g. call budget exhausted): the
+  // engine must not advance AT ALL - no walking, placing, crossing or win -
+  // until a fresh puzzle replaces the controller state.
+  failed?(): boolean;
 }
 
 export interface PuzzleLayout {
@@ -495,11 +499,14 @@ export class BridgePuzzle {
 
   tick(dt: number) {
     if (this.paused || dt <= 0) return;
+    if (this.controller?.failed?.()) return; // failed run: frozen before anything advances
+
     this.t += dt;
     this.elapsed += dt * this.speed;
     for (const m of this.members) if (m.bubbleUntil < this.t) m.bubble = null;
 
     if (this.status === "building") this.dispatch();
+    if (this.controller?.failed?.()) return; // the run just failed inside dispatch: freeze before any advance/place/deliver
 
     for (const m of this.members) {
       switch (m.state) {

@@ -499,8 +499,10 @@ function draw() {
   $("nowLine").textContent = nowLine(s);
   const b1 = s.gaps.filter((g) => g.bridge === 0 && g.filled).length;
   const b2 = s.gaps.filter((g) => g.bridge === 1 && g.filled).length;
-  $("puzzleStatus").textContent = s.paused
-    ? `Paused - puzzle #${s.seed}`
+  $("puzzleStatus").textContent = minds?.exhausted && s.status !== "complete"
+    ? `Run failed - out of model calls - puzzle #${s.seed}`
+    : s.paused
+      ? `Paused - puzzle #${s.seed}`
     : s.status === "complete"
       ? `Both bridges built - everyone across! - puzzle #${s.seed}`
       : s.status === "crossing"
