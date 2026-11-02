@@ -53,10 +53,10 @@ const PLAN_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          piece: { type: "string" },
-          lead: { type: "string" },
-          helper: { type: "string" },
-          reason: { type: "string" },
+          piece: { type: "string", description: "piece id exactly as listed, e.g. block-0" },
+          lead: { type: "string", description: "crew member id (the short id in parentheses), never their name" },
+          helper: { type: "string", description: "crew member id, required for beams; empty string for blocks" },
+          reason: { type: "string", description: "one short sentence the player can read" },
         },
         required: ["piece", "lead", "helper", "reason"],
       },
@@ -176,6 +176,18 @@ function viewSignature(view: DecisionView): string {
   return `${pieces}|${free}|${open}`;
 }
 
+// Models reliably pick the right moves but sometimes answer with the crew
+// NAME where we asked for the id. Accept either: exact id match, or a unique
+// case-insensitive name match. Anything ambiguous or unknown is rejected.
+function resolveMember(ref: string | undefined, view: DecisionView): DecisionView["members"][number] | undefined {
+  if (!ref) return undefined;
+  const byId = view.members.find((m) => m.id === ref);
+  if (byId) return byId;
+  const lower = ref.trim().toLowerCase();
+  const byName = view.members.filter((m) => m.name.toLowerCase() === lower);
+  return byName.length === 1 ? byName[0] : undefined;
+}
+
 // Validate the model's plan against the view it was answered for. The engine
 // re-validates against live state before applying; this pass drops nonsense
 // early and keeps the model's reasons for the moves it actually made.
@@ -186,11 +198,11 @@ function parsePlan(reply: PlanReply, view: DecisionView): { plan: AssignmentDeci
   for (const raw of reply.assignments ?? []) {
     const piece = view.pieces.find((p) => p.id === raw.piece && p.placeable);
     if (!piece) continue;
-    const lead = view.members.find((m) => m.id === raw.lead && m.free);
-    if (!lead || used.has(lead.id)) continue;
+    const lead = resolveMember(raw.lead, view);
+    if (!lead || !lead.free || used.has(lead.id)) continue;
     if (piece.heavy) {
-      const helper = view.members.find((m) => m.id === raw.helper && m.free);
-      if (!helper || helper.id === lead.id || used.has(helper.id)) continue;
+      const helper = resolveMember(raw.helper, view);
+      if (!helper || !helper.free || helper.id === lead.id || used.has(helper.id)) continue;
       used.add(lead.id); used.add(helper.id);
       plan.push({ piece: piece.id, lead: lead.id, helper: helper.id });
     } else {
@@ -209,14 +221,14 @@ function validAgainstView(a: AssignmentDecision, view: DecisionView): boolean {
   const lead = view.members.find((m) => m.id === a.lead && m.free);
   if (!lead) return false;
   if (piece.heavy) {
-    const helper = view.members.find((m) => m.id === a.helper && m.free);
+    const helper = view.members.find((m) => m.id === (a.helper ?? "") && m.free);
     if (!helper || helper.id === lead.id) return false;
   } else if (a.helper) return false;
   return true;
 }
 
 function buildPrompt(view: DecisionView): string {
-  const freeNames = view.members.filter((m) => m.free).map((m) => `${m.name} (${m.id})`);
+  const freeNames = view.members.filter((m) => m.free).map((m) => `${m.name} (id: ${m.id})`);
   const busy = view.members.filter((m) => !m.free).map((m) => m.name);
   const placeable = view.pieces.filter((p) => p.placeable);
   const waiting = view.pieces.filter((p) => !p.placed && !p.claimed && !p.placeable);
@@ -234,6 +246,7 @@ ${view.inProgress.length ? `\nAlready in progress: ${view.inProgress.map((w) => 
 Choose which pieces to start on now and who carries each. Rules:
 - Only pick pieces listed as placeable right now.
 - Only assign free crew members, each at most once.
+- For lead and helper, use the crew member's id (the short id in parentheses after their name), NEVER their name. Use the piece's id exactly as listed.
 - A beam needs a lead AND a different helper. A block takes only a lead (leave helper empty).
 - You do not have to assign every piece - starting fewer is fine.
 - reason: one short sentence the player can read, saying why this choice makes sense.`;

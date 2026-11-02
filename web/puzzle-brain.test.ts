@@ -208,3 +208,30 @@ test("every model request carries hard token bounds", async () => {
   assert.equal(caller.lastOpts?.maxOutputTokens, 2000, "output capped server-side");
   assert.ok(caller.lastPrompt.length <= 8000, `prompt capped, got ${caller.lastPrompt.length} chars`);
 });
+
+test("a model answering with crew names instead of ids is understood", async () => {
+  const p = new BridgePuzzle(CREW, 7);
+  const nameCaller: JsonCaller & { calls: number } = {
+    provider: "openai", model: "name-answering-model", calls: 0,
+    async callJson<T>(): Promise<T> {
+      nameCaller.calls++;
+      const view = (nameCaller as unknown as { currentView: DecisionView }).currentView;
+      const free = view.members.filter((m) => m.free);
+      const assignments = [];
+      for (const q of view.pieces) {
+        if (!q.placeable) continue;
+        if (q.heavy && free.length >= 2) {
+          assignments.push({ piece: q.id, lead: free[0].name, helper: free[1].name, reason: "by name" });
+        } else if (!q.heavy && free.length >= 1) {
+          assignments.push({ piece: q.id, lead: free[0].name, helper: "", reason: "by name" });
+        }
+      }
+      return { assignments } as T;
+    },
+  };
+  const brain = new PuzzleBrain(nameCaller);
+  wireView(nameCaller, brain, p);
+  const t = await runWithBrain(p, brain, 400);
+  assert.equal(p.status, "complete", `gave up at t=${t.toFixed(1)}s`);
+  assert.ok(brain.status().decisionsApplied >= 3, "name-based answers accepted");
+});
