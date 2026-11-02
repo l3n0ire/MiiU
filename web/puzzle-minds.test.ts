@@ -321,3 +321,100 @@ test("decline does not stall the crew when another character does want the lift"
   const gus = crew.statuses().find((s) => s.name === "Gus")!;
   assert.equal(gus.state, "active");
 });
+
+test("budget exhaustion stops the run and reports failure - no built-in takeover", async () => {
+  const clock = { t: 0 };
+  // nobody ever answers a beam ask: the puzzle cannot complete, so the small
+  // budget is guaranteed to run out mid-run
+  const selfish: Script = (me, prompt) => {
+    const taken = new Set(announcedBlocks(prompt));
+    const free = placeable(prompt).filter((p) => !p.heavy && !taken.has(p.id));
+    if (free.length) return { action: "claim", piece: free[0].id, reason: "mine" };
+    const beam = placeable(prompt).find((p) => p.heavy);
+    if (beam) return { action: "claim", piece: beam.id, reason: `${me} wants help on ${beam.id}` };
+    return { action: "wait", piece: "", reason: "waiting" };
+  };
+  const p = new BridgePuzzle(CREW, 11);
+  const caller = mindCaller(selfish);
+  const crew = new MindfulCrew(caller, () => clock.t, undefined, 6);
+  p.setController(crew);
+  await runWithMinds(p, crew, clock, 60);
+  assert.equal(crew.exhausted, true, "budget exhaustion is reported on the crew");
+  assert.equal(caller.calls, 6, "no calls beyond the budget");
+  assert.equal(crew.stats().budget, 6);
+  assert.equal(crew.stats().exhausted, true);
+  // NOT a silent takeover: no character is on built-in because of the budget
+  for (const s of crew.statuses()) {
+    assert.notEqual(s.state, "fallback", `${s.name}: budget must not flip a mind to built-in`);
+  }
+  assert.ok(
+    crew.statuses().some((s) => /out of model calls/.test(s.detail)),
+    "stalled minds say why on their own line",
+  );
+  // beams nobody would help with stay unmoved - exhaustion changes no consent
+  const view = p.decisionView();
+  for (const beam of view.pieces.filter((x) => x.heavy)) {
+    assert.equal(beam.claimed, false, `${beam.id}: unmoved - silence/declines are not consent, even at exhaustion`);
+  }
+  // let already-paid decisions settle, then prove nothing else moves and no
+  // more calls happen: the engine is waiting ("pending"), not running built-in
+  await runWithMinds(p, crew, clock, 60);
+  const settled = p.decisionView();
+  const state = (v: typeof settled) => v.pieces.map((x) => `${x.id}:${x.placed ? "placed" : x.claimed ? "claimed" : "idle"}`).join(",");
+  const before = state(settled);
+  await runWithMinds(p, crew, clock, 40);
+  assert.equal(state(p.decisionView()), before, "no built-in progress after exhaustion");
+  assert.equal(caller.calls, 6, "still no calls after exhaustion");
+  assert.equal(crew.exhausted, true, "exhaustion persists until a restart");
+});
+
+test("restarting with a larger budget finishes what the small budget could not", async () => {
+  const clock = { t: 0 };
+  let p = new BridgePuzzle(CREW, 7);
+  const caller = mindCaller(cooperative);
+  const crew = new MindfulCrew(caller, () => clock.t, undefined, 3);
+  p.setController(crew);
+  await runWithMinds(p, crew, clock, 120);
+  assert.notEqual(p.status, "complete", "3 calls cannot finish the bridge");
+  assert.equal(crew.exhausted, true);
+  assert.ok(caller.calls <= 3, `calls capped at the small budget: ${caller.calls}`);
+  // the visitor's restart option: same crew, fresh puzzle, bigger budget
+  crew.setMaxCalls(40);
+  crew.newPuzzle();
+  assert.equal(crew.exhausted, false, "exhaustion clears on restart");
+  p = new BridgePuzzle(CREW, 7);
+  p.setController(crew);
+  const t = await runWithMinds(p, crew, clock, 400);
+  assert.equal(p.status, "complete", `restart with a larger budget finishes (t=${t})`);
+  for (const s of crew.statuses()) {
+    assert.equal(s.state, "active", `${s.name}: still model-driven after restart`);
+  }
+});
+
+test("declines survive budget exhaustion - nobody is silently paired afterwards", async () => {
+  const clock = { t: 10_000 };
+  // Pip asks on the beam; everyone else openly declines it, forever.
+  const script: Script = (me, prompt) => {
+    if (me === "Pip") {
+      const beam = placeable(prompt).find((x) => x.heavy);
+      if (beam && !/ASKING for a partner/.test(prompt)) return { action: "claim", piece: beam.id, reason: "Pip asks for a partner" };
+      return { action: "wait", piece: "", reason: "Pip waits" };
+    }
+    const asks = openAsks(prompt);
+    if (asks.length && !/you declined/.test(prompt)) return { action: "decline", piece: asks[0], reason: `${me} does not want the beam` };
+    return { action: "wait", piece: "", reason: "waiting" };
+  };
+  const p = new BridgePuzzle(CREW, 7);
+  const caller = mindCaller(script);
+  const crew = new MindfulCrew(caller, () => clock.t, undefined, 8);
+  p.setController(crew);
+  await runWithMinds(p, crew, clock, 90);
+  assert.equal(crew.exhausted, true, "budget ran out");
+  const view = p.decisionView();
+  for (const beam of view.pieces.filter((x) => x.heavy)) {
+    assert.equal(beam.claimed, false, `${beam.id}: declined before exhaustion, still unmoved after it`);
+  }
+  for (const s of crew.statuses()) {
+    assert.notEqual(s.state, "fallback", `${s.name}: exhaustion never switches a decliner to built-in`);
+  }
+});

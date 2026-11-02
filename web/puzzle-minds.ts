@@ -25,9 +25,12 @@
 //   character's model failed/timed out/ran out of calls.
 // - A character whose model fails falls back ALONE (PartialReply builtinFor);
 //   the others keep their model drivers.
-// - Hard bounds: aggregate call cap per puzzle, 30s per-call timeout,
-//   per-request output cap (server-enforced) and prompt char cap. These are
-//   call/token bounds, not a dollar cap.
+// - Hard bounds: adjustable aggregate call budget per puzzle (default 40),
+//   30s per-call timeout, per-request output cap (server-enforced) and
+//   prompt char cap. These are call/token bounds, not a dollar cap. Budget
+//   exhaustion is NOT a per-character failure: the run stops and the failure
+//   is surfaced with an option to restart with a different budget. Built-in
+//   logic never silently takes over a model-driven crew.
 
 import type { JsonCaller } from "../server/llm-json.ts";
 import type {
@@ -63,7 +66,8 @@ const CALL_COOLDOWN_MS = 1_500;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_OUTPUT_TOKENS = 2000;
 // Aggregate across ALL characters: call-count bound, not a dollar bound.
-const MAX_CALLS_PER_PUZZLE = 40;
+// Adjustable per run; when it runs out the run is failed, not taken over.
+export const DEFAULT_MAX_CALLS_PER_PUZZLE = 40;
 // A beam lead waiting this long for a partner reconsiders on its own.
 const PARTNER_WAIT_MS = 45_000;
 const MEMORY_LINES = 4;
@@ -108,6 +112,7 @@ class CharacterMind {
   private lastCallAt = 0;
   private lastSignature = "";
   private failed: string | null = null;
+  private stalledByBudget = false;
   private rejectStreak = 0;
   // Bumped on timeout and on newPuzzle: a response that arrives AFTER its
   // call's generation is stale and must not touch any state - otherwise a
@@ -135,6 +140,7 @@ class CharacterMind {
     this.declinedNote = null;
     this.memory = [];
     this.failed = null;
+    this.stalledByBudget = false;
     this.lastSignature = "";
     this.lastReason = null;
     this.state = "active";
@@ -157,6 +163,7 @@ class CharacterMind {
 
   detail(): string {
     if (this.failed) return `built-in (${this.failed})`;
+    if (this.stalledByBudget) return "out of model calls (budget used up)";
     if (this.inFlight && !this.committed) return "thinking…";
     if (this.committed) return this.lastReason ?? "decided";
     if (this.declinedNote) return this.declinedNote;
@@ -187,7 +194,11 @@ class CharacterMind {
     const cooldown = CALL_COOLDOWN_MS * 2 ** Math.min(this.rejectStreak, 4);
     if (this.now() - this.lastCallAt < cooldown) return;
     if (!this.spendCall()) {
-      this.failed = "crew call budget for this puzzle used up";
+      // The crew's call budget is gone. This is NOT a per-character model
+      // failure: the mind stalls (no built-in takeover, no re-pairing of
+      // declined work) and the crew reports exhaustion so the visitor is
+      // told the agents failed and can restart with a different budget.
+      this.stalledByBudget = true;
       return;
     }
     this.lastSignature = signature;
@@ -259,6 +270,8 @@ function normalizePieceRef(ref: string | undefined): string | null {
 export class MindfulCrew implements CrewController {
   private minds = new Map<string, CharacterMind>();
   private calls = 0;
+  private maxCalls: number;
+  private exhaustedFlag = false;
   private appliedCount = 0;
   // piece -> (mindId -> reason): explicit refusals against an open beam ask.
   private declines = new Map<string, Map<string, string>>();
@@ -270,12 +283,15 @@ export class MindfulCrew implements CrewController {
     private caller: JsonCaller,
     private now: () => number = () => Date.now(),
     private scenario: MindScenario = BRIDGE_SCENARIO,
+    maxCallsPerPuzzle: number = DEFAULT_MAX_CALLS_PER_PUZZLE,
   ) {
     this.modelLabel = `${caller.model} (${caller.provider === "openai" ? "OpenAI" : "Ollama"})`;
+    this.maxCalls = normalizeBudget(maxCallsPerPuzzle);
   }
 
   newPuzzle() {
     this.calls = 0;
+    this.exhaustedFlag = false;
     this.emitted.clear();
     this.declines.clear();
     for (const m of this.minds.values()) m.newPuzzle();
@@ -298,7 +314,18 @@ export class MindfulCrew implements CrewController {
     if (reallyAll) asker.noteExpired(`everyone declined your ask for ${piece}`);
   };
 
-  private spendCall = () => ++this.calls <= MAX_CALLS_PER_PUZZLE ? true : (this.calls--, false);
+  private spendCall = () => {
+    if (this.calls >= this.maxCalls) { this.exhaustedFlag = true; return false; }
+    this.calls++;
+    return true;
+  };
+
+  // True once a mind needed a call and the budget was gone. The crew stalls
+  // (decide() has no built-in to offer for stalled minds, so the engine
+  // waits); the UI turns this into the visible run failure.
+  get exhausted(): boolean { return this.exhaustedFlag; }
+  get callBudget(): number { return this.maxCalls; }
+  setMaxCalls(n: number) { this.maxCalls = normalizeBudget(n); }
 
   private mindFor(id: string, name: string): CharacterMind {
     let m = this.minds.get(id);
@@ -436,9 +463,13 @@ export class MindfulCrew implements CrewController {
     return [...this.minds.values()].map((m) => m.status(this.modelLabel));
   }
 
-  stats(): { calls: number; decisionsApplied: number } {
-    return { calls: this.calls, decisionsApplied: this.appliedCount };
+  stats(): { calls: number; decisionsApplied: number; budget: number; exhausted: boolean } {
+    return { calls: this.calls, decisionsApplied: this.appliedCount, budget: this.maxCalls, exhausted: this.exhaustedFlag };
   }
+}
+
+function normalizeBudget(n: number): number {
+  return Number.isFinite(n) ? Math.max(1, Math.floor(n)) : DEFAULT_MAX_CALLS_PER_PUZZLE;
 }
 
 function commitmentViable(c: { action: "claim" | "help"; piece: string }, view: DecisionView, board: Board): boolean {
