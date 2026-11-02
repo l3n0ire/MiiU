@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MiiU Island</title>
+  <style>
+    :root { --bg: #f4efe6; --panel: #fffaf2; --ink: #2d2a26; --muted: #8a8278; --line: #e4dccd; --accent: #ff7a59; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.45 ui-rounded, "SF Pro Rounded", system-ui, sans-serif; background: var(--bg); color: var(--ink); min-height: 100vh; display: flex; flex-direction: column; }
+    header { padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    header h1 { font-size: 18px; margin: 0; }
+    main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+    .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 340px)); gap: 20px; width: 100%; max-width: 760px; }
+    .card { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px; text-decoration: none; color: var(--ink); transition: transform .12s ease, box-shadow .12s ease; }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(45,42,38,.10); }
+    .card .emoji { font-size: 40px; }
+    .card h2 { margin: 10px 0 6px; font-size: 20px; }
+    .card p { margin: 0 0 14px; color: var(--muted); }
+    .card .go { display: inline-block; background: var(--accent); color: #fff; border-radius: 8px; padding: 7px 14px; font-weight: 600; }
+    .tag { display: inline-block; font-size: 12px; background: var(--line); border-radius: 999px; padding: 2px 10px; margin-left: 8px; color: var(--muted); vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <header><h1>🏝️ MiiU Island</h1></header>
+  <main>
+    <div class="choices">
+      <a class="card" href="puzzle.html">
+        <div class="emoji">🌉</div>
+        <h2>Bridge Puzzle<span class="tag">new</span></h2>
+        <p>Your island crew works together to build a bridge across the river - fetching blocks,
+        teaming up on the heavy beam, and crossing to the flag. Watch what they do; chatter stays hidden unless you ask.</p>
+        <span class="go">Start building</span>
+      </a>
+      <a class="card" href="playground.html">
+        <div class="emoji">💬</div>
+        <h2>Conversation Playground</h2>
+        <p>The classic island: residents wander, chat, form relationships and stir up drama,
+        with conversations written by a model you connect. Your saved island is right where you left it.</p>
+        <span class="go">Visit my island</span>
+      </a>
+    </div>
+  </main>
+</body>
+</html>

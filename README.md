@@ -54,3 +54,12 @@ The Node server mode above is unchanged and still works for a shared island or f
 - `server/llm.ts`: prompts + structured-output JSON schemas, sent to Ollama or OpenAI.
 - `server/world.ts`: types, map, seed characters. State persists to `world.json` (delete it to reset).
 - `public/`: canvas map, speech bubbles, news feed, force-directed relationship graph, character panel.
+
+## Bridge puzzle (cooperative goal mode)
+
+The landing page now offers two experiences: the classic **Conversation Playground** and the **Bridge Puzzle**. In the puzzle, your island crew (read from the same browser save, never written) works together on a visible goal: fetch two blocks and one heavy beam, extend a bridge across the river piece by piece, and cross to the flag. Blocks take one mii; the beam only moves when two lift it together.
+
+- **Action-first:** the scene is meant to read from movement alone - fetching, carrying, helping, placing. Short chatter lines are hidden by default behind a "Show chatter" toggle.
+- **Code-driven planning:** a simple deterministic task-assignment state machine picks who carries what (`web/puzzle-engine.ts`). It is not an LLM and not learned behavior - no model connection or API key is needed for this mode.
+- **Pure engine + tests:** the engine has no DOM dependencies; `web/puzzle-engine.test.ts` covers cooperative completion, placement order, two-carrier enforcement on the beam, no crossing before the bridge is done, and seeded determinism.
+- Browser build only for now; the Node server mode (`npm start`) serves the original playground unchanged.

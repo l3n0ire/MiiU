@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MiiU - Bridge Puzzle</title>
+  <style>
+    :root { --bg: #f4efe6; --panel: #fffaf2; --ink: #2d2a26; --muted: #8a8278; --line: #e4dccd; --accent: #ff7a59; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.4 ui-rounded, "SF Pro Rounded", system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+    header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+    header h1 { font-size: 18px; margin: 0 8px 0 0; }
+    header a { color: var(--muted); text-decoration: none; font-size: 13px; }
+    header a:hover { color: var(--ink); }
+    #puzzleStatus { color: var(--muted); flex: 1; min-width: 200px; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; padding: 16px; max-width: 1280px; margin: 0 auto; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+    #puzzleMap { width: 100%; height: auto; display: block; border-radius: 10px; image-rendering: pixelated; }
+    button { font: inherit; border: 1px solid var(--line); background: white; border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    #puzzleLog { max-height: 420px; overflow-y: auto; }
+    .pline { padding: 4px 0; border-bottom: 1px dashed var(--line); }
+    .pline b { font-weight: 600; }
+    .empty { color: var(--muted); }
+    #winBanner { background: #fff1d6; border-radius: 10px; padding: 12px; margin-bottom: 16px; }
+    #winBanner b { display: block; margin-bottom: 2px; }
+    #winStats { color: var(--muted); font-size: 13px; }
+    .hint { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🌉 Bridge Puzzle</h1>
+    <a href="index.html">← All experiences</a>
+    <span id="puzzleStatus">loading…</span>
+    <button id="pauseBtn">Pause</button>
+    <label class="row">Speed <input id="speedRange" type="range" min="0.25" max="4" step="0.25" value="1" style="width:100px;margin:0" /></label>
+    <button id="resetBtn">Restart</button>
+  </header>
+  <main>
+    <section>
+      <div id="winBanner" style="display:none">
+        <b>🎉 The crew built the bridge and made it across!</b>
+        <span id="winStats"></span>
+      </div>
+      <div class="panel"><canvas id="puzzleMap"></canvas></div>
+      <p class="hint">The crew plans and carries on its own: blocks take one mii, the big beam takes two.
+      Chatter is hidden by default - watch what they do, or peek at what they say.</p>
+    </section>
+    <aside>
+      <div class="panel">
+        <h2>The goal</h2>
+        <p class="hint">River's in the way and the flag's on the far bank. Two blocks and one heavy beam
+        are scattered on this side. The crew has to fetch them, extend the bridge piece by piece,
+        and walk across. The beam only moves when two miis lift it together.</p>
+        <button id="chatterBtn" class="primary" style="width:100%">💬 Show chatter</button>
+      </div>
+      <div class="panel" id="logPanel" style="display:none">
+        <h2>Chatter</h2>
+        <div id="puzzleLog"></div>
+      </div>
+    </aside>
+  </main>
+  <script src="puzzle-bundle.js"></script>
+</body>
+</html>
