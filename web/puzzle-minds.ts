@@ -61,6 +61,17 @@ export interface MindStatus {
   lastReason: string | null;
 }
 
+// What the visitor can watch: the shared intention board every character
+// decides from (there is no group chat - choices are announced, not discussed)
+// and a feed of the latest coordination events (asks, accepts, declines,
+// starts, give-ups), newest last.
+export interface BoardView {
+  claims: { piece: string; name: string }[];
+  asks: { piece: string; name: string; declinedBy: string[] }[];
+  helps: { name: string; piece: string }[];
+}
+export interface CollabEvent { at: number; text: string }
+
 const THINKING_TIMEOUT_MS = 30_000;
 const CALL_COOLDOWN_MS = 1_500;
 const MAX_PROMPT_CHARS = 8000;
@@ -287,6 +298,9 @@ export class MindfulCrew implements CrewController {
   private declines = new Map<string, Map<string, string>>();
   private emitted = new Map<string, AssignmentDecision>(); // mindId -> decision awaiting engine outcome
   private lastView: DecisionView | null = null;
+  private names = new Map<string, string>();
+  private feed: CollabEvent[] = [];
+  private prevBoard: Board = { claim: new Map(), helpWanted: new Map(), helping: new Map() };
   readonly modelLabel: string;
 
   constructor(
@@ -303,6 +317,8 @@ export class MindfulCrew implements CrewController {
     this.calls = 0;
     this.exhaustedFlag = false;
     this.frozen = false;
+    this.feed = [];
+    this.prevBoard = { claim: new Map(), helpWanted: new Map(), helping: new Map() };
     this.emitted.clear();
     this.declines.clear();
     for (const m of this.minds.values()) m.newPuzzle();
@@ -320,9 +336,14 @@ export class MindfulCrew implements CrewController {
     const asker = askerId ? this.minds.get(askerId) : undefined;
     if (!view || !asker) return;
     const who = view.members.find((m) => m.id === mindId)?.name ?? mindId;
+    const askerName = view.members.find((m) => m.id === askerId)?.name ?? askerId!;
+    this.pushFeed(`${who} declined ${askerName}'s ask for ${piece}${reason ? ` ("${reason}")` : ""}`);
     asker.remember(`declined: ${who} declined your ask for ${piece}${reason ? ` ("${reason}")` : ""}`);
     const reallyAll = view.members.filter((m) => m.free && m.id !== askerId).every((m) => forPiece!.has(m.id));
-    if (reallyAll) asker.noteExpired(`everyone declined your ask for ${piece}`);
+    if (reallyAll) {
+      this.pushFeed(`${askerName}'s ask for ${piece} ended - everyone declined`);
+      asker.noteExpired(`everyone declined your ask for ${piece}`);
+    }
   };
 
   private spendCall = () => {
@@ -377,6 +398,7 @@ export class MindfulCrew implements CrewController {
 
   decide(view: DecisionView): ControllerReply {
     this.lastView = view;
+    for (const m of view.members) this.names.set(m.id, m.name);
     if (this.frozen) return "pending"; // terminal failure: nothing runs, nothing is assigned
     const now = this.now();
     // Outcome feedback from the PREVIOUS emission: applied() clears accepted
@@ -404,9 +426,24 @@ export class MindfulCrew implements CrewController {
       if (lead?.committed && now - lead.committed.at > PARTNER_WAIT_MS && !board.helping.has(leadId)) {
         // still unmatched (no helper committed toward this piece)
         const hasHelper = [...this.minds.values()].some((m) => m.committed?.action === "help" && m.committed.piece === piece);
-        if (!hasHelper) lead.noteExpired(`nobody was free to help with ${piece}`);
+        if (!hasHelper) {
+          this.pushFeed(`${this.names.get(leadId) ?? leadId} gave up waiting for a partner on ${piece}`);
+          lead.noteExpired(`nobody was free to help with ${piece}`);
+        }
       }
     }
+
+    // Announce newly-committed intentions exactly as the board shows them.
+    for (const [piece, id] of board.claim) {
+      if (!this.prevBoard.claim.has(piece)) this.pushFeed(`${this.names.get(id) ?? id} announced fetching ${piece}`);
+    }
+    for (const [piece, id] of board.helpWanted) {
+      if (!this.prevBoard.helpWanted.has(piece)) this.pushFeed(`${this.names.get(id) ?? id} asked for a partner on ${piece}`);
+    }
+    for (const [id, piece] of board.helping) {
+      if (!this.prevBoard.helping.has(id)) this.pushFeed(`${this.names.get(id) ?? id} agreed to help lift ${piece}`);
+    }
+    this.prevBoard = board;
 
     // Let each free character reconsider from its own perspective.
     for (const mem of view.members) {
@@ -478,6 +515,9 @@ export class MindfulCrew implements CrewController {
 
   applied(a: AssignmentDecision): void {
     this.appliedCount++;
+    const lead = this.names.get(a.lead) ?? a.lead;
+    const helper = a.helper ? this.names.get(a.helper) ?? a.helper : null;
+    this.pushFeed(helper ? `${a.piece} started: ${lead} + ${helper} lift it together` : `${a.piece} started: ${lead} carries it`);
     for (const id of [a.lead, a.helper]) {
       if (!id) continue;
       this.emitted.delete(id);
@@ -487,6 +527,31 @@ export class MindfulCrew implements CrewController {
 
   statuses(): MindStatus[] {
     return [...this.minds.values()].map((m) => m.status(this.modelLabel));
+  }
+
+  private pushFeed(text: string) {
+    const last = this.feed[this.feed.length - 1];
+    if (last?.text === text) return; // same announcement can re-derive across ticks
+    this.feed.push({ at: this.now(), text });
+    if (this.feed.length > 12) this.feed.shift();
+  }
+
+  // The shared intention board, as every character currently sees it.
+  boardView(): BoardView {
+    const board = this.board();
+    const name = (id: string) => this.names.get(id) ?? id;
+    return {
+      claims: [...board.claim.entries()].map(([piece, id]) => ({ piece, name: name(id) })),
+      asks: [...board.helpWanted.entries()].map(([piece, id]) => ({
+        piece, name: name(id), declinedBy: [...(this.declines.get(piece)?.keys() ?? [])].map(name),
+      })),
+      helps: [...board.helping.entries()].map(([id, piece]) => ({ name: name(id), piece })),
+    };
+  }
+
+  // Latest coordination events, newest last (capped at 12).
+  feedView(): CollabEvent[] {
+    return [...this.feed];
   }
 
   stats(): { calls: number; decisionsApplied: number; budget: number; exhausted: boolean } {

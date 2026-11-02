@@ -104,10 +104,31 @@ function connectFromStorage() {
   attachMinds(setup, key);
 }
 
+function renderBoardPanel() {
+  const now = $("boardNow");
+  const feed = $("boardFeed");
+  if (!minds) {
+    now.textContent = "Connect a model to watch them coordinate - the built-in assigner does not deliberate.";
+    feed.textContent = "";
+    return;
+  }
+  const board = minds.boardView();
+  const lines: string[] = [];
+  for (const a of board.asks) {
+    lines.push(`ASK: ${a.name} wants a partner for ${a.piece}${a.declinedBy.length ? ` - declined by ${a.declinedBy.join(", ")}` : ""}`);
+  }
+  for (const h of board.helps) lines.push(`LIFT: ${h.name} agreed to help with ${h.piece}`);
+  for (const c of board.claims) lines.push(`GET: ${c.name} is fetching ${c.piece}`);
+  now.textContent = lines.join("\n") || "(nothing announced right now)";
+  const events = minds.feedView();
+  feed.textContent = events.length ? `Recent:\n${events.map((e) => `- ${e.text}`).join("\n")}` : "";
+}
+
 function renderCrewPanel() {
   const driver = $("crewDriver");
   const last = $("crewLast");
   const btn = $("crewSetupBtn") as HTMLButtonElement;
+  renderBoardPanel();
   if (!minds) {
     driver.textContent = "Built-in logic (no model connected)";
     last.style.display = "none";
