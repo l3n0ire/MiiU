@@ -52,7 +52,7 @@ const MOVE_SCHEMA = {
   properties: {
     action: {
       type: "string",
-      description: '"fetch" = go get a crate and bring it to camp; "scout" = walk up to the ridge and look closely for a hidden pass; "share" = tell the crew about a pass YOU found; "wait" = do nothing for now',
+      description: 'Choose only an action offered in your prompt. "fetch" = go get a crate and bring it to camp; "scout" = look closely for a hidden pass; "share" = tell the crew about a pass YOU found, only when sharing is enabled; "wait" = do nothing for now',
     },
     crate: { type: "string", description: "crate id exactly as listed, e.g. crate-0; only for fetch, empty otherwise" },
     reason: { type: "string", description: "one short sentence the player can read, in your own voice" },
@@ -300,7 +300,8 @@ function buildAgentPrompt(view: MemberView, mind: PassMind): string {
 
 The known way around the ridge is the detour gap at (${view.detour.x},${view.detour.y}) - everyone knows it, and it is a long walk. A narrow hidden pass may cut straight through the ridge somewhere - but nobody knows where, or whether it exists, until someone walks up to the ridge and scouts it closely. Rushing past on an errand finds nothing; only scouting does.
 ${view.passIKnow ? `\nYou KNOW a hidden pass through the ridge at (${view.passIKnow.x},${view.passIKnow.y}) (${view.passIKnow.foundBy === "me" ? "you found it yourself" : `${view.passIKnow.foundBy} shared it with the crew`}). Your routes already use it.` : ""}
-${view.iFoundUnshared ? `\nYou found this pass YOURSELF and the crew does NOT know. It is your choice: "share" it and everyone's trips can get shorter - or keep it to yourself and only your own trips get shorter.` : ""}
+${view.iFoundUnshared ? `\nYou found this pass YOURSELF and the crew does NOT know. ${view.sharingAllowed ? 'It is your choice: "share" it and everyone\'s trips can get shorter - or keep it to yourself and only your own trips get shorter.' : 'Sharing is OFF for this run. You cannot share the pass; use it privately to fetch supplies, or wait.'}` : ""}
+${!view.sharingAllowed ? 'Sharing is OFF for this run. Do not choose "share"; discoveries stay private.' : ""}
 Your position: (${me.x.toFixed(1)},${me.y.toFixed(1)}). You are ${me.carrying ? "carrying a crate back to camp" : "free"}.
 Other crew: ${view.others.map((o) => `${o.name} (${o.free ? "free" : "busy"})`).join(", ") || "none"}.
 Delivered so far: ${view.delivered}/${view.total}.

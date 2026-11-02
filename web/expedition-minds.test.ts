@@ -350,3 +350,42 @@ test("the budget wall latches in the same tick - no walk, delivery or win after 
   }
   assert.ok(sawWall, "the wall was hit");
 });
+
+test("sharing OFF prompts explain the restriction and never offer a private discovery to share", async () => {
+  const clock = { t: 0 };
+  const p = new Expedition(CREW, 7);
+  p.setSharing(false);
+  const caller = mindCaller(cooperative);
+  const minds = new PassMinds(caller, { now: () => clock.t, maxCalls: 60 });
+  p.setController(minds);
+  await runWithMinds(p, clock, 900);
+  assert.equal(p.status, "complete"); // scripted regression, not a real-model result
+  assert.equal(p.snapshot().pass.sharedBy, null);
+  assert.deepEqual(p.snapshot().pass.knownBy, ["Pip"]);
+  const discoverer = caller.prompts.filter((q) => q.prompt.includes("You found this pass YOURSELF"));
+  assert.ok(discoverer.length > 0, "exercised the previously contradictory private-discovery prompt");
+  for (const q of caller.prompts) {
+    assert.match(q.prompt, /Sharing is OFF for this run\. Do not choose "share"/);
+    assert.ok(!q.prompt.includes('It is your choice: "share"'));
+    assert.ok(!q.prompt.includes('"share" to tell the crew'));
+    if (q.me !== "Pip") assert.ok(!q.prompt.includes(`(${p.layout.rx0},${p.layout.passY})`), "private location stays hidden");
+  }
+  for (const q of discoverer) assert.match(q.prompt, /You cannot share the pass; use it privately to fetch supplies, or wait/);
+});
+
+test("sharing ON still offers the discoverer a genuine share-or-keep choice", async () => {
+  const clock = { t: 0 };
+  const p = new Expedition(CREW, 7);
+  const caller = mindCaller(cooperative);
+  const minds = new PassMinds(caller, { now: () => clock.t });
+  p.setController(minds);
+  await runWithMinds(p, clock, 900);
+  const discoverer = caller.prompts.filter((q) => q.prompt.includes("You found this pass YOURSELF"));
+  assert.ok(discoverer.length > 0);
+  for (const q of discoverer) {
+    assert.ok(q.prompt.includes('It is your choice: "share"'));
+    assert.ok(q.prompt.includes('"share" to tell the crew'));
+    assert.ok(!q.prompt.includes("Sharing is OFF"));
+  }
+  assert.equal(p.snapshot().pass.sharedBy, "Pip");
+});
