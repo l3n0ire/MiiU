@@ -190,12 +190,36 @@ function draw() {
     ctx.fillStyle = c.color;
     ctx.fillRect(c.x, c.y, 5, 5);
   }
+  // "Now" line: the current action in plain readable text, outside the
+  // canvas, so it stays legible on small screens where in-canvas labels shrink.
+  $("nowLine").textContent = nowLine(s);
   $("puzzleStatus").textContent = s.paused
     ? `Paused - puzzle #${s.seed}`
     : s.status === "complete"
       ? `Bridge complete! - puzzle #${s.seed}`
       : `Building the bridge - ${s.placedCount}/${s.totalPieces} pieces placed - puzzle #${s.seed}`;
   ($("pauseBtn") as HTMLButtonElement).textContent = s.paused ? "Resume" : "Pause";
+}
+
+function nowLine(s: ReturnType<BridgePuzzle["snapshot"]>): string {
+  if (s.status === "complete") return "Bridge built - the whole crew made it across.";
+  const byId = new Map(s.members.map((m) => [m.id, m]));
+  const placing = s.members.find((m) => m.state === "placing");
+  if (placing) return `${placing.name} is placing a ${placing.carrying ?? "piece"} into the bridge.`;
+  const lift = s.pieces.find((p) => p.state === "carried" && p.carriers.length >= 2);
+  if (lift) {
+    const names = lift.carriers.map((id) => byId.get(id)?.name ?? "?").join(" + ");
+    return `${names} are carrying the ${lift.kind} together.`;
+  }
+  const crossing = s.members.find((m) => m.state === "crossing");
+  if (crossing) return `${crossing.name} is crossing the new bridge toward the flag.`;
+  const carrying = s.members.find((m) => m.state === "carrying" && m.carrying);
+  if (carrying) return `${carrying.name} is carrying a ${carrying.carrying}.`;
+  const helping = s.members.find((m) => m.state === "helping" || m.state === "waiting");
+  if (helping) return `${helping.name} is getting in place to help lift.`;
+  const fetching = s.members.find((m) => m.state === "fetching");
+  if (fetching) return `${fetching.name} is heading for a piece.`;
+  return "";
 }
 
 let last = performance.now();
