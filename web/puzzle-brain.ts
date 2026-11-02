@@ -34,6 +34,10 @@ export interface BrainStatus {
 }
 
 const THINKING_TIMEOUT_MS = 30_000;
+// Structural cost bound: each call spends the visitor's own key, so a puzzle
+// never exceeds this many model calls no matter how the surface changes.
+// Normal puzzles take 3-8; the cap only stops pathological re-planning.
+const MAX_CALLS_PER_PUZZLE = 25;
 
 const PLAN_SCHEMA = {
   type: "object",
@@ -76,6 +80,7 @@ export class PuzzleBrain implements CrewController {
   // New puzzle layout: clear the old plan and give the model a fresh chance
   // (a previous failure does not carry into a new puzzle).
   newPuzzle() {
+    this.calls = 0;
     this.plan = null;
     this.reasons.clear();
     this.failed = null;
@@ -116,7 +121,7 @@ export class PuzzleBrain implements CrewController {
       return "fallback";
     }
     const signature = viewSignature(view);
-    if (signature !== this.lastSignature && !this.inFlight) {
+    if (signature !== this.lastSignature && !this.inFlight && this.calls < MAX_CALLS_PER_PUZZLE) {
       this.lastSignature = signature;
       void this.refresh(view);
     }
@@ -124,6 +129,11 @@ export class PuzzleBrain implements CrewController {
       const usable = this.plan.filter((a) => validAgainstView(a, view));
       if (usable.length) return usable;
       // The stored plan no longer fits the live state; wait for the refresh.
+    }
+    if (this.calls >= MAX_CALLS_PER_PUZZLE && !this.inFlight) {
+      // Budget exhausted with nothing usable left: hand over, don't stall.
+      this.failed = `call budget for this puzzle used up (${MAX_CALLS_PER_PUZZLE})`;
+      return "fallback";
     }
     return "pending"; // a call is in flight or about to start
   }

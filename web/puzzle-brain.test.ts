@@ -169,3 +169,27 @@ test("no duplicate calls while one is in flight; new surface means a new call", 
   assert.equal(p.status, "complete");
   assert.ok(calls >= 2, "a changed decision surface triggers a fresh plan");
 });
+
+test("per-puzzle call budget caps spending on the visitor's key", async () => {
+  const p = new BridgePuzzle(CREW, 7);
+  const caller = fakeCaller();
+  const brain = new PuzzleBrain(caller);
+  const base = p.decisionView();
+  // Churn which pieces are placeable so every answer lands, gets consumed,
+  // and the surface keeps changing - the worst case for re-planning.
+  for (let i = 0; i < 40; i++) {
+    const view: DecisionView = {
+      ...base,
+      pieces: base.pieces.map((q, j) => ({ ...q, placeable: (i + j) % 2 === 0 })),
+    };
+    if (!view.pieces.some((q) => q.placeable)) view.pieces[0].placeable = true;
+    (caller as unknown as { currentView: DecisionView }).currentView = view;
+    brain.decide(view);
+    await flush();
+    await flush();
+  }
+  assert.equal(caller.calls, 25, `calls bounded at 25, got ${caller.calls}`);
+  const st = brain.status();
+  assert.equal(st.state, "fallback");
+  assert.ok(st.detail.includes("call budget"), st.detail);
+});
