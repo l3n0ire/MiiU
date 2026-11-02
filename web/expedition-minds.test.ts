@@ -230,3 +230,54 @@ test("newPuzzle resets minds and budget; an adjustable limit applies to the next
   assert.equal(p2.status, "complete", "same layout completes with a bigger budget");
   assert.ok(minds.stats().maxCalls === 60);
 });
+
+test("a reply in flight when the budget runs out cannot mutate the failed run (PR43-bypass analog)", async () => {
+  const clock = { t: 10_000 };
+  const p = new Expedition(CREW, 7);
+  let resolveLate: ((v: Move) => void) | null = null;
+  const caller = {
+    provider: "ollama" as const,
+    model: "fake-minds",
+    async callJson<T>(prompt: string): Promise<T> {
+      if (prompt.includes("You are Pip.")) {
+        return new Promise<T>((res) => { resolveLate = res as (v: Move) => void; });
+      }
+      return { action: "wait", crate: "", reason: "waiting" } as T;
+    },
+  };
+  const minds = new PassMinds(caller, { now: () => clock.t, maxCalls: 2 });
+  p.setController(minds);
+  // run until the budget exhausts and the engine declares failure while Pip's
+  // call is still hanging (no generation bump happens on budget failure)
+  let t = 0;
+  while (t < 120 && p.status === "running") {
+    for (let i = 0; i < 20 && p.status === "running"; i++) { p.tick(0.05); t += 0.05; }
+    clock.t += 2000;
+    await flush();
+  }
+  assert.equal(p.status, "failed", "budget exhaustion failed the run with a call in flight");
+  assert.ok(resolveLate, "Pip's call was still in flight at failure");
+  const frozen = JSON.stringify(p.snapshot().members);
+  const deliveredBefore = p.deliveredCount();
+  const callsBefore = minds.stats().calls;
+  // the in-flight reply resolves AFTER the failure
+  (resolveLate as unknown as (v: Move) => void)({ action: "fetch", crate: "crate-0", reason: "late answer" });
+  await flush();
+  clock.t += 5000;
+  // pause/resume churn (the Dismiss+Resume analog) must not revive anything
+  p.paused = true; p.paused = false;
+  for (let i = 0; i < 100; i++) p.tick(0.05);
+  await flush();
+  assert.equal(p.status, "failed", "late reply + resume did not resurrect the run");
+  assert.equal(p.deliveredCount(), deliveredBefore, "no crate finished under the failure label");
+  assert.equal(JSON.stringify(p.snapshot().members), frozen, "the failed run stayed frozen");
+  assert.equal(minds.stats().calls, callsBefore, "no further model calls after failure");
+  // and a restart discards the stale reply via the generation bump
+  minds.newPuzzle(60);
+  const p2 = new Expedition(CREW, 7);
+  p2.setController(minds);
+  p2.tick(0.5);
+  await flush();
+  const pip = minds.statuses().find((q) => q.name === "Pip")!;
+  assert.notEqual(pip.lastReason, "late answer", "stale pre-failure reply did not carry into the restart");
+});
