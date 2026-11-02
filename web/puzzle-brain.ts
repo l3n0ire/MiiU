@@ -34,6 +34,12 @@ export interface BrainStatus {
 }
 
 const THINKING_TIMEOUT_MS = 30_000;
+// Hard per-request bounds, so cost on the visitor's key is enforceable rather
+// than estimated: prompts are character-capped (<= ~2000 tokens worst case)
+// and completions are capped server-side (OpenAI max_completion_tokens /
+// Ollama num_predict; reasoning tokens included on OpenAI).
+const MAX_PROMPT_CHARS = 8000;
+const MAX_OUTPUT_TOKENS = 2000;
 // Structural cost bound: each call spends the visitor's own key, so a puzzle
 // never exceeds this many model calls no matter how the surface changes.
 // Normal puzzles take 3-8; the cap only stops pathological re-planning.
@@ -143,9 +149,10 @@ export class PuzzleBrain implements CrewController {
     this.thinkingSince = this.now();
     this.calls++;
     try {
-      const reply = await this.caller.callJson<PlanReply>(buildPrompt(view), PLAN_SCHEMA, {
+      const reply = await this.caller.callJson<PlanReply>(buildPrompt(view).slice(0, MAX_PROMPT_CHARS), PLAN_SCHEMA, {
         system: "You coordinate a tiny crew of island miis building a bridge in a cozy puzzle game. Reply only with JSON matching the schema.",
         temperature: 0.4,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
       });
       const { plan, reasons } = parsePlan(reply, view);
       if (!plan.length) {

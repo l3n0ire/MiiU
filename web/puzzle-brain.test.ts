@@ -17,13 +17,17 @@ function fakeCaller(opts: {
   fail?: boolean;
   nonsense?: boolean;
   onCall?: () => void;
-} = {}): JsonCaller & { calls: number } {
+} = {}): JsonCaller & { calls: number; lastOpts?: { maxOutputTokens?: number }; lastPrompt: string } {
   const caller = {
     provider: "ollama" as const,
     model: "fake-test-model",
     calls: 0,
-    async callJson<T>(_prompt: string, _schema: object): Promise<T> {
+    lastOpts: undefined as undefined | { maxOutputTokens?: number },
+    lastPrompt: "",
+    async callJson<T>(_prompt: string, _schema: object, callOpts?: { maxOutputTokens?: number }): Promise<T> {
       caller.calls++;
+      caller.lastOpts = callOpts;
+      caller.lastPrompt = _prompt;
       opts.onCall?.();
       if (opts.fail) throw new Error("connection refused");
       if (opts.nonsense) {
@@ -50,7 +54,7 @@ function fakeCaller(opts: {
       return { assignments } as T;
     },
   };
-  return caller as JsonCaller & { calls: number };
+  return caller;
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -192,4 +196,15 @@ test("per-puzzle call budget caps spending on the visitor's key", async () => {
   const st = brain.status();
   assert.equal(st.state, "fallback");
   assert.ok(st.detail.includes("call budget"), st.detail);
+});
+
+test("every model request carries hard token bounds", async () => {
+  const p = new BridgePuzzle(CREW, 7);
+  const caller = fakeCaller();
+  const brain = new PuzzleBrain(caller);
+  wireView(caller, brain, p);
+  await runWithBrain(p, brain, 400);
+  assert.equal(p.status, "complete");
+  assert.equal(caller.lastOpts?.maxOutputTokens, 2000, "output capped server-side");
+  assert.ok(caller.lastPrompt.length <= 8000, `prompt capped, got ${caller.lastPrompt.length} chars`);
 });
