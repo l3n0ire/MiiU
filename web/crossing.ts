@@ -48,7 +48,11 @@ const CROSSING_SCENARIO: MindScenario = {
   waitingNote: "the way to them does not exist yet - bridge 1 and the nearer far gaps come first",
 };
 
-let puzzle = new LongCrossing(loadCrew(), seed);
+// The same four miis play every puzzle on this page load. loadCrew() gives
+// random ids to seed characters, so calling it per reset would create a NEW
+// cast each time (and duplicate minds in the crew panel) - cache it.
+const CREW = loadCrew();
+let puzzle = new LongCrossing(CREW, seed);
 let showChatter = false;
 let confetti: { x: number; y: number; vx: number; vy: number; color: string; t: number }[] = [];
 let celebrated = false;
@@ -62,6 +66,7 @@ interface SavedSetup {
   ollamaUrl?: string;
   model?: string;
   rememberKey?: boolean;
+  callBudget?: number; // per-puzzle aggregate model call budget (default 40)
 }
 
 let minds: MindfulCrew | null = null;
@@ -88,7 +93,7 @@ function attachMinds(setup: SavedSetup, key: string | null) {
       openaiApiKey: key ?? undefined,
       model: setup.model || undefined,
     });
-    minds = new MindfulCrew(caller, undefined, CROSSING_SCENARIO);
+    minds = new MindfulCrew(caller, undefined, CROSSING_SCENARIO, setup.callBudget);
     puzzle.setController(minds);
   } catch (err) {
     console.error("Could not connect model:", err);
@@ -119,14 +124,16 @@ function renderCrewPanel() {
   const stats = minds.stats();
   const statuses = minds.statuses();
   const fallen = statuses.filter((s) => s.state === "fallback").length;
-  driver.textContent = statuses.length > 0 && fallen === statuses.length
-    ? "Built-in logic - model unavailable for every mii"
-    : `Each mii decides for itself with ${minds.modelLabel}`;
+  driver.textContent = minds.exhausted
+    ? `Run failed - model call budget used up (${stats.calls}/${stats.budget})`
+    : statuses.length > 0 && fallen === statuses.length
+      ? "Built-in logic - model unavailable for every mii"
+      : `Each mii decides for itself with ${minds.modelLabel}`;
   const lines = statuses.map((s) => {
     const tag = s.state === "fallback" ? "[built-in]" : s.state === "thinking" ? "[thinking]" : "[model]";
     return `${tag} ${s.name}: ${s.detail}`;
   });
-  if (stats.calls > 0) lines.push(`${stats.calls} model call${stats.calls === 1 ? "" : "s"} (one choice each), ${stats.decisionsApplied} job${stats.decisionsApplied === 1 ? "" : "s"} started this puzzle`);
+  if (stats.calls > 0) lines.push(`${stats.calls}/${stats.budget} model call${stats.calls === 1 ? "" : "s"} (one choice each), ${stats.decisionsApplied} job${stats.decisionsApplied === 1 ? "" : "s"} started this puzzle`);
   last.textContent = lines.join("\n");
   last.style.whiteSpace = "pre-line";
   last.style.display = lines.length ? "" : "none";
@@ -172,7 +179,7 @@ function showCrewSetup() {
       </label>
       <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Without the checkbox the key is kept only while this tab is open.
       Either way it is sent only to api.openai.com when the crew needs a decision - this site serves static files and never receives it.
-      Each mii makes its own short calls when its situation changes (hard cap: 40 calls per puzzle; a mii that hits the cap, times out, or errors visibly switches to built-in logic for the rest of the puzzle, named per character). Anyone using this browser profile can use what you store here,
+      Each mii makes its own short calls when its situation changes, within the call budget you set below. Anyone using this browser profile can use what you store here,
       so prefer not remembering on shared devices.</p>
       <label style="font-size:13px;color:#8a8278">Model (optional)</label>
       <input id="crewModel" type="text" autocomplete="off" placeholder="default: gpt-6-luna" style="width:100%;margin:4px 0" />
@@ -190,6 +197,9 @@ function showCrewSetup() {
       <button type="button" id="crewTestOllama">Test connection</button>
       <span id="crewOllamaStatus" style="font-size:12px;margin-left:8px"></span>
     </div>
+    <label style="font-size:13px;color:#8a8278">Model call budget per puzzle (shared by the whole crew)</label>
+    <input id="crewBudget" type="number" min="1" step="1" style="width:120px;margin:4px 0" />
+    <p style="font-size:12px;color:#8a8278;margin:0 0 10px">When the crew's calls run out, the run stops and the agents report failure - nothing is silently taken over by built-in logic - and you can restart with a different budget. A mii whose own call times out or errors still falls back to built-in logic on its own, named per character.</p>
     <div id="crewSetupError" style="color:#b3261e;font-size:13px;min-height:18px;margin-top:8px"></div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <button type="button" id="crewStart" style="flex:1;background:#ff7a59;border:none;color:#fff;padding:8px;border-radius:8px">Connect</button>
@@ -199,6 +209,7 @@ function showCrewSetup() {
   document.body.appendChild(overlay);
 
   const $c = (id: string) => card.querySelector(id) as HTMLElement & { value?: string; checked?: boolean };
+  const readBudgetInput = () => Math.max(1, Math.floor(Number($c("#crewBudget").value) || 40));
   let provider: "ollama" | "openai" = existing?.provider ?? "openai";
   const paint = () => {
     $c("#crewPaneOpenAI").style.display = provider === "openai" ? "" : "none";
@@ -210,6 +221,7 @@ function showCrewSetup() {
   $c("#crewProvOllama").onclick = () => { provider = "ollama"; paint(); };
   if (existing?.model) { $c("#crewModel").value = existing.model; $c("#crewOllamaModel").value = existing.model; }
   if (existing?.ollamaUrl) $c("#crewOllamaUrl").value = existing.ollamaUrl;
+  $c("#crewBudget").value = String(existing?.callBudget ?? 40);
   const hasKey = Boolean(storedKey());
   if (hasKey) $c("#crewKey").value = "••••••••••••"; // hint a key is remembered; never echo it
   $c("#crewRemember").checked = Boolean(existing?.rememberKey && hasKey);
@@ -245,12 +257,13 @@ function showCrewSetup() {
       sessionKey = key;
       const remember = Boolean($c("#crewRemember").checked);
       if (remember) localStorage.setItem(KEY_KEY, key); else localStorage.removeItem(KEY_KEY);
-      setup = { provider, model: $c("#crewModel").value?.trim() || undefined, rememberKey: remember };
+      setup = { provider, model: $c("#crewModel").value?.trim() || undefined, rememberKey: remember, callBudget: readBudgetInput() };
     } else {
       setup = {
         provider,
         ollamaUrl: ($c("#crewOllamaUrl").value ?? "").trim() || "http://localhost:11434",
         model: $c("#crewOllamaModel").value?.trim() || undefined,
+        callBudget: readBudgetInput(),
       };
     }
     localStorage.setItem(SETUP_KEY, JSON.stringify(setup));
@@ -268,12 +281,64 @@ function showCrewSetup() {
   };
 }
 
+// ---- budget exhaustion: the agents failed, offer a restart with a new budget ----
+let failOverlay: HTMLElement | null = null;
+let failHandled = false;
+
+function persistBudget(n: number) {
+  const setup = savedSetup();
+  if (!setup) return;
+  setup.callBudget = n;
+  localStorage.setItem(SETUP_KEY, JSON.stringify(setup));
+}
+
+function showBudgetFailure() {
+  if (failOverlay || !minds) return;
+  const stats = minds.stats();
+  const overlay = el("div", { id: "budgetFailOverlay" });
+  overlay.setAttribute("style", [
+    "position:fixed", "inset:0", "background:rgba(45,42,38,.45)", "z-index:1000",
+    "display:flex", "align-items:center", "justify-content:center", "padding:16px",
+  ].join(";"));
+  const card = el("div");
+  card.setAttribute("style", [
+    "background:#fffaf2", "color:#2d2a26", "border-radius:14px", "padding:20px",
+    "max-width:440px", "width:100%", "font:14px/1.45 ui-rounded,'SF Pro Rounded',system-ui,sans-serif",
+  ].join(";"));
+  card.innerHTML = `
+    <h2 style="margin:0 0 4px;font-size:18px">The agents failed to accomplish the task</h2>
+    <p style="margin:0 0 12px;color:#8a8278">They used all <b>${stats.budget}</b> model calls for this puzzle before finishing.
+    The run stopped where it was - built-in logic did not take over, and no character was quietly switched.</p>
+    <label style="font-size:13px;color:#8a8278">Call budget for the retry</label>
+    <input id="failBudget" type="number" min="1" step="1" value="${stats.budget}" style="width:120px;margin:4px 0;display:block" />
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button type="button" id="failRestart" style="flex:1;background:#ff7a59;border:none;color:#fff;padding:8px;border-radius:8px">Restart with this budget</button>
+      <button type="button" id="failDismiss" style="flex:1">Dismiss</button>
+    </div>`;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  failOverlay = overlay;
+  const $f = (id: string) => card.querySelector(id) as HTMLElement & { value?: string };
+  const close = () => { overlay.remove(); failOverlay = null; };
+  $f("#failDismiss").onclick = close;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  $f("#failRestart").onclick = () => {
+    const n = Math.max(1, Math.floor(Number($f("#failBudget").value) || stats.budget));
+    minds!.setMaxCalls(n);
+    persistBudget(n);
+    close();
+    reset(false); // same puzzle, fresh budget
+  };
+}
+
 function reset(newSeed: boolean) {
   if (newSeed) seed = Math.floor(Math.random() * 100000);
-  puzzle = new LongCrossing(loadCrew(), seed);
+  puzzle = new LongCrossing(CREW, seed);
   if (minds) { minds.newPuzzle(); puzzle.setController(minds); }
   confetti = [];
   celebrated = false;
+  failHandled = false;
+  if (failOverlay) { failOverlay.remove(); failOverlay = null; }
   $("winBanner").style.display = "none";
   ($("pauseBtn") as HTMLButtonElement).textContent = "Pause";
   renderLog();
@@ -434,8 +499,10 @@ function draw() {
   $("nowLine").textContent = nowLine(s);
   const b1 = s.gaps.filter((g) => g.bridge === 0 && g.filled).length;
   const b2 = s.gaps.filter((g) => g.bridge === 1 && g.filled).length;
-  $("puzzleStatus").textContent = s.paused
-    ? `Paused - puzzle #${s.seed}`
+  $("puzzleStatus").textContent = minds?.exhausted && s.status !== "complete"
+    ? `Run failed - out of model calls - puzzle #${s.seed}`
+    : s.paused
+      ? `Paused - puzzle #${s.seed}`
     : s.status === "complete"
       ? `Both bridges built - everyone across! - puzzle #${s.seed}`
       : s.status === "crossing"
@@ -477,11 +544,27 @@ function frame(now: number) {
   logTimer += dt;
   if (showChatter && logTimer > 0.5) { logTimer = 0; renderLog(); }
   crewTimer += dt;
-  if (crewTimer > 0.5) { crewTimer = 0; renderCrewPanel(); }
+  if (crewTimer > 0.5) {
+    crewTimer = 0;
+    renderCrewPanel();
+    if (minds?.exhausted && puzzle.status !== "complete" && !failHandled) {
+      failHandled = true;
+      puzzle.paused = true; // stop the scene: the run has failed
+      showBudgetFailure();
+    }
+  }
   requestAnimationFrame(frame);
 }
 
-$("pauseBtn").addEventListener("click", () => { puzzle.paused = !puzzle.paused; });
+$("pauseBtn").addEventListener("click", () => {
+  // A failed run (budget used up) cannot be resumed into silent progress:
+  // re-open the failure dialog instead - the way forward is a restart.
+  if (!puzzle.paused || !(minds?.exhausted && puzzle.status !== "complete")) {
+    puzzle.paused = !puzzle.paused;
+    return;
+  }
+  showBudgetFailure();
+});
 $("restartBtn").addEventListener("click", () => reset(false));
 $("newBtn").addEventListener("click", () => reset(true));
 ($("speedRange") as HTMLInputElement).addEventListener("input", (e) => {

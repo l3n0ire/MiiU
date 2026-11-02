@@ -133,3 +133,16 @@ test("seeded layouts are deterministic", () => {
   const b = generateCrossLayout(99);
   assert.deepEqual(a, b);
 });
+test("a controller reporting failed() freezes the crossing engine completely", () => {
+  const crew = [
+    { id: "a", name: "Pip", color: "#ff7a59" },
+    { id: "b", name: "Marlo", color: "#4a90d9" },
+    { id: "c", name: "Juniper", color: "#b36bd6" },
+    { id: "d", name: "Gus", color: "#3fb57a" },
+  ];
+  const p = new LongCrossing(crew, 7);
+  p.setController({ decide: () => "pending", failed: () => true });
+  const before = JSON.stringify(p.snapshot());
+  for (let i = 0; i < 600; i++) p.tick(0.05);
+  assert.equal(JSON.stringify(p.snapshot()), before, "no tick advances anything while failed");
+});
