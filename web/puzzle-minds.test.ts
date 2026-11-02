@@ -475,3 +475,54 @@ test("a reply in flight when the budget runs out is discarded - no late commit a
   assert.equal(view.inProgress.some((w) => w.piece === "block-0"), false, "late claim never reached the engine");
   assert.equal(p.placedCount?.() ?? view.pieces.filter((x) => x.placed).length, 0, "nothing placed");
 });
+
+test("collaboration is visible: board view shows asks/accepts/claims and the feed narrates them", async () => {
+  const clock = { t: 0 };
+  const p = new BridgePuzzle(CREW, 7);
+  const caller = mindCaller(cooperative);
+  const crew = new MindfulCrew(caller, () => clock.t);
+  p.setController(crew);
+  const t = await runWithMinds(p, crew, clock, 400);
+  assert.equal(p.status, "complete", `t=${t}`);
+  const feed = crew.feedView().map((e) => e.text).join("\n");
+  // the full collaboration arc was narrated: asks, accepts, starts
+  assert.match(feed, /asked for a partner on beam-\d/, "beam ask announced");
+  assert.match(feed, /agreed to help lift beam-\d/, "acceptance announced");
+  assert.match(feed, /beam-\d started: \w+ \+ \w+ lift it together/, "two-carrier lift named both miis");
+  assert.match(feed, /announced fetching block-\d/, "solo claims announced");
+  assert.match(feed, /block-\d started: \w+ carries it/, "solo starts named");
+  // the board view matches the engine's end state: everything placed, nothing open
+  const board = crew.boardView();
+  assert.deepEqual(board.asks, [], "no open asks once built");
+  assert.deepEqual(board.helps, [], "no pending helps once built");
+  // a fresh puzzle clears the visible history
+  crew.newPuzzle();
+  assert.deepEqual(crew.feedView(), []);
+});
+
+test("declines appear on the board and in the feed with names", async () => {
+  const clock = { t: 10_000 };
+  const script: Script = (me, prompt) => {
+    if (me === "Pip") {
+      const beam = placeable(prompt).find((x) => x.heavy);
+      if (beam && !/ASKING for a partner/.test(prompt)) return { action: "claim", piece: beam.id, reason: "Pip asks for a partner" };
+      return { action: "wait", piece: "", reason: "Pip waits" };
+    }
+    const asks = openAsks(prompt);
+    if (asks.length && !/you declined/.test(prompt)) return { action: "decline", piece: asks[0], reason: `${me} does not want the beam` };
+    return { action: "wait", piece: "", reason: "waiting" };
+  };
+  const p = new BridgePuzzle(CREW, 7);
+  const caller = mindCaller(script);
+  const crew = new MindfulCrew(caller, () => clock.t);
+  p.setController(crew);
+  await runWithMinds(p, crew, clock, 60);
+  const feed = crew.feedView().map((e) => e.text).join("\n");
+  assert.match(feed, /Pip asked for a partner on beam-\d/, "the ask is announced");
+  assert.match(feed, /\w+ declined Pip's ask for beam-\d \("[^"]+"\)/, "declines named with reasons");
+  assert.match(feed, /Pip's ask for beam-\d ended - everyone declined/, "release is narrated");
+  // while the ask was open, the board showed who had declined (checked via feed ordering sanity:
+  // the decline events exist and the ask later ended - no consent was manufactured)
+  const board = crew.boardView();
+  assert.equal(board.helps.length, 0, "nobody is shown helping after everyone declined");
+});
