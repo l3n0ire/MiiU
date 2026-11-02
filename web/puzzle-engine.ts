@@ -15,7 +15,7 @@
 // the Miis do not negotiate. Chatter is template lines and is hidden by
 // default in the UI.
 //
-// OPTIONAL MODEL CONTROL: a CrewController (web/puzzle-brain.ts) can replace
+// OPTIONAL MODEL CONTROL: a CrewController (web/puzzle-minds.ts) can replace
 // the assignment step with decisions from a visitor-connected LLM (Ollama or
 // OpenAI). The model only CHOOSES jobs - which piece next, who carries - from
 // the same feasibility view the built-in assigner uses. The engine revalidates
@@ -87,7 +87,11 @@ export interface AssignmentDecision { piece: string; lead: string; helper?: stri
 
 // "pending": the controller is still thinking - the crew waits (wanders) and
 // the built-in assigner does NOT run. "fallback": run the built-in assigner.
-export type ControllerReply = AssignmentDecision[] | "pending" | "fallback";
+// A PartialReply lets an autonomous controller cover only some members: its
+// decisions are validated as usual, and the built-in assigner runs ONLY for
+// the member ids in builtinFor (e.g. that character's own model is down).
+export interface PartialReply { decisions: AssignmentDecision[]; builtinFor: string[] }
+export type ControllerReply = AssignmentDecision[] | PartialReply | "pending" | "fallback";
 export interface CrewController {
   decide(view: DecisionView): ControllerReply;
   applied?(a: AssignmentDecision): void; // called for each decision the engine accepted
@@ -375,23 +379,34 @@ export class BridgePuzzle {
     const out = this.controller.decide(view);
     if (out === "pending") return; // thinking: crew wanders, no built-in claims
     if (out === "fallback") { this.assign(); return; }
+    const partial = !Array.isArray(out);
+    const decisions = partial ? out.decisions : out;
+    const builtinFor = partial ? new Set(out.builtinFor) : null;
     let applied = 0;
-    for (const a of out) if (this.applyDecision(a)) { applied++; this.controller.applied?.(a); }
+    for (const a of decisions) if (this.applyDecision(a)) { applied++; this.controller.applied?.(a); }
     // A plan with zero usable moves does not stall the game: built-in logic
     // covers the tick (the controller reports this state honestly upstream).
-    if (applied === 0) this.assign();
+    // A partial reply instead covers only the members it names.
+    if (partial) { if (builtinFor && builtinFor.size) this.assign(builtinFor); }
+    else if (applied === 0) this.assign();
   }
 
   // Feasibility-driven assignment: only pieces whose stand cell is reachable
   // right now can be claimed, so the crew discovers the workable order from
   // the layout instead of following a scripted one. Nearest free member leads;
   // beams recruit the nearest other free member as helper.
-  private assign() {
+  private assign(onlyMembers?: Set<string>) {
     for (const p of this.pieces) {
       if (p.state !== "idle" && p.state !== "claimed") continue;
+      // Partial coverage (an autonomous crew where only some characters fell
+      // back): built-in logic handles solo blocks for those members only.
+      // Beams are left to the minds - a beam needs two independently
+      // consenting carriers, and a built-in member cannot consent for itself
+      // or draft a model-driven character into a lift.
+      if (onlyMembers && p.heavy) continue;
       const standFrom = this.members[0]?.pos ?? { x: 1, y: this.layout.bridgeY };
       if (!this.standCell(p, standFrom)) continue; // not placeable yet
-      const freeMembers = this.members.filter((m) => this.free(m));
+      const freeMembers = this.members.filter((m) => this.free(m) && (!onlyMembers || onlyMembers.has(m.id)));
       if (!freeMembers.length) continue;
       const byNear = [...freeMembers].sort((a, b) => dist(a.pos, p.pos) - dist(b.pos, p.pos));
       if (!p.heavy) {
