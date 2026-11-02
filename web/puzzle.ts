@@ -7,11 +7,13 @@
 // Crew control: by default the engine's built-in assigner picks jobs. The
 // visitor can connect their own model (their OpenAI key or their own Ollama -
 // same setup storage and key handling as the playground page, never sent
-// anywhere except the chosen provider) and the model then chooses the crew's
-// jobs through puzzle-brain.ts. The driver line always names who is actually
-// deciding, including when it falls back to built-in logic.
+// anywhere except the chosen provider) and then EVERY mii decides for itself
+// through puzzle-minds.ts: its own calls, its own memory, its own choice to
+// claim work, ask for a lift partner, or answer someone else's ask. The panel
+// always names each character's actual driver, including per-character
+// fallback to built-in logic.
 import { BridgePuzzle, PUZZLE_W, PUZZLE_H, type CrewMember } from "./puzzle-engine.ts";
-import { PuzzleBrain } from "./puzzle-brain.ts";
+import { MindfulCrew } from "./puzzle-minds.ts";
 import { createJsonCaller } from "../server/llm-json.ts";
 import { migrateWorld, seedWorld } from "../server/world.ts";
 
@@ -56,7 +58,7 @@ interface SavedSetup {
   rememberKey?: boolean;
 }
 
-let brain: PuzzleBrain | null = null;
+let minds: MindfulCrew | null = null;
 let sessionKey: string | null = null; // this tab only, when "remember" is unchecked
 
 function savedSetup(): SavedSetup | null {
@@ -72,7 +74,7 @@ function storedKey(): string | null {
   return localStorage.getItem(KEY_KEY);
 }
 
-function attachBrain(setup: SavedSetup, key: string | null) {
+function attachMinds(setup: SavedSetup, key: string | null) {
   try {
     const caller = createJsonCaller({
       provider: setup.provider,
@@ -80,11 +82,11 @@ function attachBrain(setup: SavedSetup, key: string | null) {
       openaiApiKey: key ?? undefined,
       model: setup.model || undefined,
     });
-    brain = new PuzzleBrain(caller);
-    puzzle.setController(brain);
+    minds = new MindfulCrew(caller);
+    puzzle.setController(minds);
   } catch (err) {
     console.error("Could not connect model:", err);
-    brain = null;
+    minds = null;
     puzzle.setController(null);
   }
 }
@@ -94,28 +96,34 @@ function connectFromStorage() {
   if (!setup) return;
   const key = sessionKey ?? storedKey();
   if (setup.provider === "openai" && !key) return;
-  attachBrain(setup, key);
+  attachMinds(setup, key);
 }
 
 function renderCrewPanel() {
   const driver = $("crewDriver");
   const last = $("crewLast");
   const btn = $("crewSetupBtn") as HTMLButtonElement;
-  if (!brain) {
+  if (!minds) {
     driver.textContent = "Built-in logic (no model connected)";
     last.style.display = "none";
     btn.textContent = "Connect a model";
     return;
   }
-  const s = brain.status();
-  driver.textContent = s.detail;
   btn.textContent = "Change model";
-  const bits: string[] = [];
-  if (s.decisionsApplied > 0) bits.push(`${s.decisionsApplied} model decision${s.decisionsApplied === 1 ? "" : "s"} made`);
-  if (s.lastReason && s.state === "active") bits.push(`Last call: \u201c${s.lastReason}\u201d`);
-  if (s.state === "fallback" && s.decisionsApplied === 0) bits.push("No model moves yet this puzzle");
-  last.textContent = bits.join(" - ");
-  last.style.display = bits.length ? "" : "none";
+  const stats = minds.stats();
+  const statuses = minds.statuses();
+  const fallen = statuses.filter((s) => s.state === "fallback").length;
+  driver.textContent = statuses.length > 0 && fallen === statuses.length
+    ? "Built-in logic - model unavailable for every mii"
+    : `Each mii decides for itself with ${minds.modelLabel}`;
+  const lines = statuses.map((s) => {
+    const tag = s.state === "fallback" ? "[built-in]" : s.state === "thinking" ? "[thinking]" : "[model]";
+    return `${tag} ${s.name}: ${s.detail}`;
+  });
+  if (stats.calls > 0) lines.push(`${stats.calls} model call${stats.calls === 1 ? "" : "s"} (one choice each), ${stats.decisionsApplied} job${stats.decisionsApplied === 1 ? "" : "s"} started this puzzle`);
+  last.textContent = lines.join("\n");
+  last.style.whiteSpace = "pre-line";
+  last.style.display = lines.length ? "" : "none";
 }
 
 function el(tag: string, attrs: Record<string, string> = {}): HTMLElement {
@@ -142,9 +150,10 @@ function showCrewSetup() {
       <h2 style="margin:0 0 4px;font-size:18px">Your crew, your model</h2>
       <button type="button" id="crewClose" aria-label="Close setup" style="background:none;border:none;font-size:18px;cursor:pointer;color:#8a8278;padding:0 0 0 12px;line-height:1">✕</button>
     </div>
-    <p style="margin:0 0 14px;color:#8a8278">A model <b>you</b> connect chooses which piece the crew works next
-    and who carries it. The miis still walk, lift and place with the same rules - and if the model
-    can't answer, the built-in logic takes over and says so.</p>
+    <p style="margin:0 0 14px;color:#8a8278">A model <b>you</b> connect gives each mii its own decisions:
+    which piece to carry, when to ask for a partner on a heavy beam, and whether to answer someone
+    else's ask. Nobody is assigned jobs from above. They still walk, lift and place with the same
+    rules - and any mii whose model can't answer falls back to built-in logic, named per character.</p>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button type="button" id="crewProvOpenAI" style="flex:1">OpenAI key</button>
       <button type="button" id="crewProvOllama" style="flex:1">My own Ollama</button>
@@ -157,7 +166,7 @@ function showCrewSetup() {
       </label>
       <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Without the checkbox the key is kept only while this tab is open.
       Either way it is sent only to api.openai.com when the crew needs a decision - this site serves static files and never receives it.
-      Each decision is one short model call, a handful per puzzle. Anyone using this browser profile can use what you store here,
+      Each mii makes its own short calls when its situation changes (hard cap: 40 calls per puzzle). Anyone using this browser profile can use what you store here,
       so prefer not remembering on shared devices.</p>
       <label style="font-size:13px;color:#8a8278">Model (optional)</label>
       <input id="crewModel" type="text" autocomplete="off" placeholder="default: gpt-6-luna" style="width:100%;margin:4px 0" />
@@ -239,13 +248,13 @@ function showCrewSetup() {
       };
     }
     localStorage.setItem(SETUP_KEY, JSON.stringify(setup));
-    attachBrain(setup, sessionKey ?? storedKey());
+    attachMinds(setup, sessionKey ?? storedKey());
     close();
     renderCrewPanel();
   };
 
   $c("#crewDisconnect").onclick = () => {
-    brain = null;
+    minds = null;
     puzzle.setController(null);
     localStorage.removeItem(SETUP_KEY); // connecting again is a fresh choice
     close();
@@ -256,7 +265,7 @@ function showCrewSetup() {
 function reset(newSeed: boolean) {
   if (newSeed) seed = Math.floor(Math.random() * 100000);
   puzzle = new BridgePuzzle(loadCrew(), seed);
-  if (brain) { brain.newPuzzle(); puzzle.setController(brain); }
+  if (minds) { minds.newPuzzle(); puzzle.setController(minds); }
   confetti = [];
   celebrated = false;
   $("winBanner").style.display = "none";
