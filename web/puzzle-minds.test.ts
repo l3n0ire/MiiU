@@ -11,7 +11,7 @@ const CREW: CrewMember[] = [
   { id: "d", name: "Gus", color: "#3fb57a" },
 ];
 
-type Move = { action: "claim" | "help" | "wait"; piece: string; reason: string };
+type Move = { action: "claim" | "help" | "decline" | "wait"; piece: string; reason: string };
 type Script = (me: string, prompt: string, state: { callsBy: Map<string, number> }) => Move;
 
 function mindCaller(script: Script, opts: { failFor?: string } = {}): JsonCaller & { calls: number; prompts: { me: string; prompt: string }[] } {
@@ -200,4 +200,124 @@ test("token/request bounds travel on every per-character call", async () => {
   assert.ok(seen.length >= 4, "calls happened");
   for (const o of seen) assert.equal(o.maxOutputTokens, 2000, "server-enforced output cap on every call");
   for (const x of caller.prompts) assert.ok(x.prompt.length <= 8000, `prompt char cap holds (${x.prompt.length})`);
+});
+
+test("a reply arriving after the 30s timeout cannot commit on the fallen-back mind", async () => {
+  const clock = { t: 10_000 };
+  const releases: ((v: unknown) => void)[] = [];
+  const caller: JsonCaller & { calls: number } = {
+    provider: "ollama", model: "fake-slow", calls: 0,
+    callJson<T>(): Promise<T> {
+      caller.calls++;
+      return new Promise<T>((resolve) => { releases.push(resolve as (v: unknown) => void); });
+    },
+  };
+  const p = new BridgePuzzle(CREW, 7);
+  const crew = new MindfulCrew(caller, () => clock.t);
+  p.setController(crew);
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  p.tick(0.05); await flush(); // starts calls (they hang)
+  clock.t += 31_000; // past THINKING_TIMEOUT_MS
+  p.tick(0.05); await flush(); // timeout registers: mind marked failed
+  const during = crew.statuses().find((s) => s.name === "Pip")!;
+  assert.equal(during.state, "fallback");
+  assert.match(during.detail, /no answer after 30s/);
+  // the late reply now arrives - it must not touch anything
+  releases.forEach((r) => r({ action: "claim", piece: "block-0", reason: "sneaky late answer" }));
+  await flush(); await flush();
+  p.tick(0.05); await flush();
+  const after = crew.statuses().find((s) => s.name === "Pip")!;
+  assert.equal(after.state, "fallback", "still fallen back - late reply did not revive the mind");
+  assert.match(after.detail, /no answer after 30s/, "driver line unchanged");
+  assert.notEqual(after.lastReason, "sneaky late answer", "no memory/reason mutation from the stale reply");
+  // and no intention leaked onto the board: Pip is covered by built-in, so
+  // the engine must not receive a model decision credited to a
+  const view = p.decisionView();
+  const pipBusyWithModelPiece = view.inProgress.some((w) => w.lead === "a" && w.piece === "block-0");
+  assert.equal(pipBusyWithModelPiece, false, "late claim never reached the engine");
+});
+
+test("a reply from before a puzzle reset cannot commit on the fresh puzzle", async () => {
+  const clock = { t: 10_000 };
+  const releases: ((v: unknown) => void)[] = [];
+  let calls = 0;
+  const caller: JsonCaller = {
+    provider: "ollama", model: "fake-slow",
+    callJson<T>(): Promise<T> {
+      calls++;
+      if (calls === 1) return new Promise<T>((resolve) => { releases.push(resolve as (v: unknown) => void); });
+      return Promise.resolve({ action: "wait", piece: "", reason: "fresh puzzle, watching" } as T);
+    },
+  };
+  const p = new BridgePuzzle(CREW, 7);
+  const crew = new MindfulCrew(caller, () => clock.t);
+  p.setController(crew);
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  p.tick(0.05); await flush(); // call 1 in flight (hangs)
+  crew.newPuzzle(); // reset while the reply is outstanding
+  releases.forEach((r) => r({ action: "claim", piece: "block-0", reason: "stale pre-reset answer" }));
+  await flush(); await flush();
+  clock.t += 2000;
+  p.tick(0.05); await flush();
+  const pip = crew.statuses().find((s) => s.name === "Pip")!;
+  assert.notEqual(pip.lastReason, "stale pre-reset answer", "stale reply discarded after reset");
+  assert.notEqual(pip.state, "fallback");
+  const view = p.decisionView();
+  assert.equal(view.inProgress.some((w) => w.piece === "block-0" && w.lead === "a"), false);
+});
+
+test("an explicit decline is told to the asker; when everyone declines the asker chooses anew", async () => {
+  const clock = { t: 10_000 };
+  // Pip always asks on the first beam; everyone else openly declines it.
+  const script: Script = (me, prompt) => {
+    if (me === "Pip") {
+      if (/everyone declined/.test(prompt)) return { action: "wait", piece: "", reason: "no one will join me, fine" };
+      const beam = placeable(prompt).find((x) => x.heavy);
+      if (beam && !/ASKING for a partner/.test(prompt)) return { action: "claim", piece: beam.id, reason: "Pip asks for a partner" };
+      return { action: "wait", piece: "", reason: "Pip waits" };
+    }
+    const asks = openAsks(prompt);
+    if (asks.length && !/you declined/.test(prompt)) return { action: "decline", piece: asks[0], reason: `${me} does not want the beam` };
+    const taken = new Set(announcedBlocks(prompt));
+    const free = placeable(prompt).filter((x) => !x.heavy && !taken.has(x.id));
+    if (free.length) return { action: "claim", piece: free[0].id, reason: "mine" };
+    return { action: "wait", piece: "", reason: "waiting" };
+  };
+  const p = new BridgePuzzle(CREW, 7);
+  const caller = mindCaller(script);
+  const crew = new MindfulCrew(caller, () => clock.t);
+  p.setController(crew);
+  await runWithMinds(p, crew, clock, 90);
+  const view = p.decisionView();
+  for (const beam of view.pieces.filter((x) => x.heavy)) {
+    if (!beam.placed) assert.equal(beam.claimed, false, `${beam.id}: never moved - declines are not consent`);
+  }
+  // the asker was TOLD about refusals (in a later prompt's memory), and the
+  // everyone-declined release reached it
+  const pipPrompts = caller.prompts.filter((x) => x.me === "Pip").map((x) => x.prompt).join("\n");
+  assert.match(pipPrompts, /declined your ask for beam-\d/, "asker sees who declined");
+  assert.match(pipPrompts, /everyone declined your ask/, "asker is released when all decline");
+  // refusals are visible on the characters' own panel lines
+  const decliner = crew.statuses().find((s) => /declined the ask/.test(s.detail));
+  assert.ok(decliner, "a decliner's panel line shows the refusal");
+});
+
+test("decline does not stall the crew when another character does want the lift", async () => {
+  const clock = { t: 10_000 };
+  // Gus declines every ask once, then helps the next one; others cooperate.
+  const script: Script = (me, prompt, { callsBy }) => {
+    if (me === "Gus" && (callsBy.get("Gus") ?? 0) === 1) {
+      const asks = openAsks(prompt);
+      if (asks.length) return { action: "decline", piece: asks[0], reason: "Gus is busy in his head" };
+    }
+    return cooperative(me, prompt, { callsBy });
+  };
+  const p = new BridgePuzzle(CREW, 7);
+  const caller = mindCaller(script);
+  const crew = new MindfulCrew(caller, () => clock.t);
+  p.setController(crew);
+  const t = await runWithMinds(p, crew, clock, 400);
+  assert.equal(p.status, "complete", `t=${t}`);
+  const gus = crew.statuses().find((s) => s.name === "Gus")!;
+  assert.equal(gus.state, "active");
 });
