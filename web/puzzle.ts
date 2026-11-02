@@ -120,7 +120,7 @@ function renderCrewPanel() {
     const tag = s.state === "fallback" ? "[built-in]" : s.state === "thinking" ? "[thinking]" : "[model]";
     return `${tag} ${s.name}: ${s.detail}`;
   });
-  if (stats.decisionsApplied > 0) lines.push(`${stats.decisionsApplied} model decision${stats.decisionsApplied === 1 ? "" : "s"} made this puzzle`);
+  if (stats.calls > 0) lines.push(`${stats.calls} model call${stats.calls === 1 ? "" : "s"} (one choice each), ${stats.decisionsApplied} job${stats.decisionsApplied === 1 ? "" : "s"} started this puzzle`);
   last.textContent = lines.join("\n");
   last.style.whiteSpace = "pre-line";
   last.style.display = lines.length ? "" : "none";
