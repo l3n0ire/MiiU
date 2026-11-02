@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_TUNING, applyAction, ensureSecrets, gameViewFor, knownSecrets, maybeStartFestival,
   removeFromGame, resolveDuePledges, resolveFestival,
-  EXPOSE_WITNESS_COST, EXPOSE_LEAKER_COST, PLEDGE_BROKEN_COST, PLEDGE_KEPT_GAIN, SWITCH_CLOSE_COST,
+  EXPOSE_WITNESS_COST, EXPOSE_LEAKER_COST, EXPOSE_SELF_WITNESS_COST,
+  MAX_ACTIVE_PLEDGES, PLEDGE_BROKEN_COST, PLEDGE_KEPT_FLOOR, PLEDGE_KEPT_GAIN, PLEDGE_KEPT_STEP, SWITCH_CLOSE_COST,
   type ActionContext,
 } from "./game.ts";
 import { getRel, migrateWorld, seedWorld, type World } from "./world.ts";
@@ -476,4 +477,187 @@ test("event prompt: public exposure fallout stays in, private attribution chain 
   assert.ok(!prompt.includes("through Marlo"), "exposure tell-chain attribution must not reach the public event prompt");
   assert.ok(!prompt.includes("told Marlo about the potluck"), "unexposed tell record must not reach the public event prompt");
   assert.ok(!prompt.includes("confided the potluck story"), "private-chat summary must not reach the public event prompt");
+});
+
+test("reward fix: self-exposure is priced, cheaper than being exposed, single-use", () => {
+  const w = freshWorld();
+  const [a, b, c, d] = w.characters;
+  const secret = w.game.secrets.find((s) => s.subject === a.id)!;
+  const r = applyAction(w, a.id, { kind: "expose", secret: 1 }, ctx(w, a.id, b.id));
+  assert.equal(r.kind, "expose");
+  assert.ok(secret.exposed);
+  // no longer free: everyone watching thinks a little less of you
+  for (const other of [b, c, d]) {
+    assert.equal(getRel(w, a.id, other.id).affinity, EXPOSE_SELF_WITNESS_COST, `self-exposure cost with ${other.name}`);
+  }
+  assert.equal(a.mood, "sad");
+  assert.ok(Math.abs(EXPOSE_SELF_WITNESS_COST) < Math.abs(EXPOSE_WITNESS_COST), "still cheaper than being exposed by a rival");
+  // single-use still holds
+  assert.equal(applyAction(w, a.id, { kind: "expose", secret: 1 }, ctx(w, a.id, b.id)).kind, "none");
+});
+
+test("reward fix: rival exposure keeps its full shipped price", () => {
+  const w = freshWorld();
+  const [a, b, c] = w.characters;
+  applyAction(w, a.id, { kind: "tell", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  const r = applyAction(w, b.id, { kind: "expose", secret: 1 }, ctx(w, b.id, c.id));
+  assert.equal(r.kind, "expose");
+  assert.equal(getRel(w, a.id, c.id).affinity, EXPOSE_WITNESS_COST);
+  assert.equal(getRel(w, a.id, b.id).affinity, EXPOSE_LEAKER_COST);
+  assert.equal(a.mood, "angry");
+});
+
+test("reward fix: a resident can hold at most MAX_ACTIVE_PLEDGES open promises", () => {
+  const w = freshWorld();
+  const f = startRace(w);
+  void f;
+  const [a, b, c, d] = w.characters;
+  const r1 = applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  const r2 = applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: c.name }, ctx(w, a.id, c.id));
+  const r3 = applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: d.name }, ctx(w, a.id, d.id));
+  assert.deepEqual([r1.kind, r2.kind, r3.kind], ["promise_keep", "promise_keep", "promise_keep"]);
+  assert.equal(MAX_ACTIVE_PLEDGES, 3);
+  // the 4th open promise is not credible: dropped, whatever the kind
+  assert.equal(applyAction(w, a.id, { kind: "promise_tell", secret: 1, to: b.name }, ctx(w, a.id, b.id)).kind, "none");
+  assert.equal(applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: b.name }, ctx(w, a.id, b.id)).kind, "none");
+  // settling one frees a slot again
+  w.game.clockMs = w.game.pledges[0].deadline;
+  resolveDuePledges(w);
+  const r4 = applyAction(w, a.id, { kind: "promise_tell", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  assert.equal(r4.kind, "promise_tell");
+});
+
+test("reward fix: kept-promise trust decays to zero within a race, resets next race", () => {
+  const w = freshWorld();
+  startRace(w);
+  const [a, b, c, d] = w.characters;
+  // first race: three keep-promises on a's own secret
+  applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: c.name }, ctx(w, a.id, c.id));
+  applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: d.name }, ctx(w, a.id, d.id));
+  w.game.clockMs = w.game.festival!.deadline;
+  resolveDuePledges(w);
+  resolveFestival(w, TUNING); // close the first race so a second can start
+  assert.equal(getRel(w, a.id, b.id).affinity, PLEDGE_KEPT_GAIN, "1st kept promise pays full");
+  assert.equal(getRel(w, a.id, c.id).affinity, PLEDGE_KEPT_GAIN - PLEDGE_KEPT_STEP, "2nd pays half");
+  assert.equal(getRel(w, a.id, d.id).affinity, PLEDGE_KEPT_FLOOR, "3rd pays nothing - churn is worthless");
+  // new race: the decay resets, so promise-keeping stays a live mechanic
+  w.game.clockMs = w.game.festival!.nextAt!;
+  assert.ok(maybeStartFestival(w, TUNING));
+  const bIdx = knownSecrets(w, b.id).findIndex((s) => s.subject === b.id) + 1;
+  applyAction(w, b.id, { kind: "tell", secret: bIdx, to: a.name }, ctx(w, b.id, a.id));
+  const aIdx = knownSecrets(w, a.id).findIndex((s) => s.subject === b.id) + 1;
+  assert.ok(aIdx >= 1, "a knows b's secret now");
+  const r4 = applyAction(w, a.id, { kind: "promise_keep", secret: aIdx, to: c.name }, ctx(w, a.id, c.id));
+  const r5 = applyAction(w, a.id, { kind: "promise_keep", secret: aIdx, to: d.name }, ctx(w, a.id, d.id));
+  assert.deepEqual([r4.kind, r5.kind], ["promise_keep", "promise_keep"]);
+  w.game.clockMs = w.game.festival!.deadline;
+  resolveDuePledges(w);
+  assert.equal(getRel(w, a.id, c.id).affinity, (PLEDGE_KEPT_GAIN - PLEDGE_KEPT_STEP) + PLEDGE_KEPT_GAIN, "new race: first kept promise pays full again");
+  assert.equal(getRel(w, a.id, d.id).affinity, PLEDGE_KEPT_FLOOR + (PLEDGE_KEPT_GAIN - PLEDGE_KEPT_STEP), "new race: second pays half again");
+});
+
+test("reward fix: a broken promise still costs full price", () => {
+  const w = freshWorld();
+  startRace(w);
+  const [a, b] = w.characters;
+  const r = applyAction(w, a.id, { kind: "promise_tell", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  assert.equal(r.kind, "promise_tell");
+  w.game.clockMs += TUNING.tellWindowMs + 1;
+  resolveDuePledges(w);
+  assert.equal(getRel(w, a.id, b.id).affinity, PLEDGE_BROKEN_COST, "undelivered tell-promise breaks at full cost");
+});
+
+test("reward fix: adversarial sequential churn is bounded per race across races", () => {
+  // Strongest legal churn line, driven directly against the rules for 3 races:
+  // every race the churner makes as many keep-promises as the cap allows with
+  // FRESH (promisee, secret) triples, settling them all. Minted trust per
+  // promiser per race must never exceed GAIN + (GAIN-STEP) + floor = 12,
+  // however many races are piled on: sequential churn across races cannot mint
+  // trust faster than a bounded rate, and repetitive churn within a race pays 0.
+  const w = freshWorld();
+  const [a, b, c, d] = w.characters;
+  // a learns everyone's secrets up front so fresh pledge triples exist each race
+  for (const other of [b, c, d]) {
+    const idx = knownSecrets(w, other.id).findIndex((s) => s.subject === other.id) + 1;
+    applyAction(w, other.id, { kind: "tell", secret: idx, to: a.name }, ctx(w, other.id, a.id));
+  }
+  const perRaceMinted: number[] = [];
+  for (let race = 1; race <= 3; race++) {
+    startRace(w);
+    const before = new Map(w.characters.map((x) => [x.id, getRel(w, a.id, x.id).affinity]));
+    // churn: promise every other resident, fresh secret each race
+    const secretIdx = race; // a's known list: own secret first, then b/c/d's in tell order
+    for (const promisee of [b, c, d]) {
+      applyAction(w, a.id, { kind: "promise_keep", secret: secretIdx, to: promisee.name }, ctx(w, a.id, promisee.id));
+    }
+    w.game.clockMs = w.game.festival!.deadline;
+    resolveDuePledges(w);
+    let minted = 0;
+    for (const x of [b, c, d]) minted += Math.max(0, getRel(w, a.id, x.id).affinity - before.get(x.id)!);
+    perRaceMinted.push(minted);
+    assert.ok(minted <= PLEDGE_KEPT_GAIN + (PLEDGE_KEPT_GAIN - PLEDGE_KEPT_STEP),
+      `race ${race}: churn minted ${minted} trust, per-race bound is ${PLEDGE_KEPT_GAIN + (PLEDGE_KEPT_GAIN - PLEDGE_KEPT_STEP)}`);
+    resolveFestival(w, TUNING);
+    w.game.clockMs = w.game.festival!.nextAt!;
+  }
+  // every race actually repeated the churn (no trivial pass), and each was bounded
+  assert.deepEqual(perRaceMinted, [12, 12, 12], `expected exactly the bounded payout each race, got ${perRaceMinted}`);
+});
+
+test("reward fix: pledge made in one race draws on that race's budget when it settles later", () => {
+  // Cross-race outstanding pledge: a tell-promise made during race 1 but
+  // delivered during race 2 is stamped race 1 and charges race 1's budget,
+  // so boundary-stacking cannot double a race's payout.
+  const w = freshWorld();
+  startRace(w);
+  const race1 = w.game.raceSeq!;
+  const [a, b] = w.characters;
+  // exhaust a's race-1 budget with two keep-promises (8 + 4)
+  applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: w.characters[2].name }, ctx(w, a.id, w.characters[2].id));
+  w.game.clockMs = w.game.festival!.deadline;
+  resolveDuePledges(w);
+  assert.equal(getRel(w, a.id, b.id).affinity, PLEDGE_KEPT_GAIN);
+  assert.equal(getRel(w, a.id, w.characters[2].id).affinity, PLEDGE_KEPT_GAIN - PLEDGE_KEPT_STEP);
+  resolveFestival(w, TUNING);
+  w.game.clockMs = w.game.festival!.nextAt!;
+  // race 2: a fresh tell-promise is stamped race 2 and pays full...
+  assert.ok(maybeStartFestival(w, TUNING));
+  assert.notEqual(w.game.raceSeq, race1);
+  const d = w.characters[3];
+  const r = applyAction(w, a.id, { kind: "promise_tell", secret: 1, to: d.name }, ctx(w, a.id, d.id));
+  assert.equal(r.kind, "promise_tell");
+  const plg = w.game.pledges.find((p) => p.status === "active" && p.kind === "tell_secret")!;
+  assert.equal(plg.race, w.game.raceSeq);
+  // ...but a pledge STAMPED with an exhausted race would pay 0:
+  plg.race = race1; // simulate an old-race pledge settling late
+  const before = getRel(w, a.id, d.id).affinity;
+  applyAction(w, a.id, { kind: "tell", secret: 1, to: d.name }, ctx(w, a.id, d.id));
+  assert.equal(getRel(w, a.id, d.id).affinity, before, "old-race pledge settles at 0 - race budgets cannot be stacked");
+});
+
+test("reward fix: old saves migrate with race counter defaults", () => {
+  const w = freshWorld();
+  startRace(w);
+  const [a, b] = w.characters;
+  applyAction(w, a.id, { kind: "promise_keep", secret: 1, to: b.name }, ctx(w, a.id, b.id));
+  // simulate a pre-fix save: strip the new fields
+  const raw = JSON.parse(JSON.stringify(w)) as World;
+  delete raw.game.raceSeq;
+  for (const p of raw.game.pledges) delete p.race;
+  const m = migrateWorld(raw);
+  assert.equal(m.game.raceSeq, 0);
+  assert.equal(m.game.pledges.length, 1);
+  assert.equal(m.game.pledges[0].race, 0);
+  // migrated pledge settles fine, charged to race 0's budget at full gain
+  m.game.clockMs = m.game.festival!.deadline;
+  resolveDuePledges(m);
+  const aId = m.characters[0].id, bId = m.characters[1].id;
+  assert.equal(getRel(m, aId, bId).affinity, PLEDGE_KEPT_GAIN);
+  // and the next race starts a fresh counter
+  resolveFestival(m, TUNING);
+  m.game.clockMs = m.game.festival!.nextAt!;
+  assert.ok(maybeStartFestival(m, TUNING));
+  assert.equal(m.game.raceSeq, 1);
 });

@@ -110,6 +110,7 @@ export interface Pledge {
   secret: string; // secret id
   deadline: number; // game-clock ms
   status: "active" | "kept" | "broken";
+  race?: number; // festival sequence the promise was made in (0 = pre-race); kept-promise trust decays per promiser per race
 }
 
 export interface GameState {
@@ -117,6 +118,7 @@ export interface GameState {
   festival: Festival | null;
   secrets: Secret[];
   pledges: Pledge[];
+  raceSeq?: number; // incremented each time a festival race starts
 }
 
 export interface World {
@@ -283,6 +285,7 @@ export function migrateWorld(w: World): World {
   const g = (src.game ?? {}) as GameState;
   const knownId = (x: unknown): x is string => typeof x === "string" && (ids.has(x) || x === PLAYER_ID);
   out.game.clockMs = Math.max(0, cleanNum(g.clockMs));
+  out.game.raceSeq = Math.max(0, cleanNum(g.raceSeq));
   const gf = (g.festival ?? null) as Festival | null;
   if (gf && typeof gf === "object") {
     const status = (["campaigning", "decided", "flopped"] as const).includes(gf.status as never) ? gf.status : "flopped";
@@ -324,6 +327,7 @@ export function migrateWorld(w: World): World {
       promiser: p.promiser, promisee: p.promisee, kind: p.kind, secret: p.secret,
       deadline: cleanNum(p.deadline),
       status: (["active", "kept", "broken"] as const).includes(p.status as never) ? p.status : "broken",
+      race: Math.max(0, cleanNum(p.race)),
     });
   }
   return out;

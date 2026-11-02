@@ -30,6 +30,11 @@ export const EXPOSE_LEAKER_COST = -20; // and this with whoever leaked
 export const SWITCH_CLOSE_COST = -10; // switching festival backing away from a close bond
 export const PLEDGE_KEPT_GAIN = 8;
 export const PLEDGE_BROKEN_COST = -12;
+// Reward-pricing fixes (2026-11-01, after the RL exploit audit):
+export const EXPOSE_SELF_WITNESS_COST = -3; // airing your own dirty laundry still costs you with everyone watching
+export const MAX_ACTIVE_PLEDGES = 3; // open promises per resident - more is not credible
+export const PLEDGE_KEPT_STEP = 4; // each promise a resident has already kept THIS RACE pays this much less...
+export const PLEDGE_KEPT_FLOOR = 0; // ...down to zero: your first promise each race is meaningful, your word gets cheap fast, and repeating it stops paying
 
 const CLOSE_LABELS = new Set(["friend", "best friend", "crush", "family"]);
 const CLOSE_AFFINITY = 40;
@@ -105,6 +110,7 @@ export function maybeStartFestival(world: World, t: GameTuning): string | null {
   const pool = [...world.characters];
   const a = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
   const b = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+  g.raceSeq = (g.raceSeq ?? 0) + 1;
   g.festival = {
     status: "campaigning",
     candidates: [a.id, b.id],
@@ -203,7 +209,7 @@ function pledgeExists(world: World, promiser: string, promisee: string, secret: 
 }
 
 function makePledge(world: World, promiser: string, promisee: string, kind: Pledge["kind"], secret: Secret, deadline: number): Pledge {
-  const p: Pledge = { id: gid("plg"), promiser, promisee, kind, secret: secret.id, deadline, status: "active" };
+  const p: Pledge = { id: gid("plg"), promiser, promisee, kind, secret: secret.id, deadline, status: "active", race: world.game.raceSeq ?? 0 };
   world.game.pledges.push(p);
   const what = kind === "keep_secret" ? `keep the secret about ${nameOf3(world, secret.subject)} until the festival` : `tell them the secret about ${nameOf3(world, secret.subject)}`;
   remember(world, promiser, `(promise) You promised ${nameOf3(world, promisee)} to ${what}.`);
@@ -213,8 +219,14 @@ function makePledge(world: World, promiser: string, promisee: string, kind: Pled
 
 function settlePledge(world: World, p: Pledge, kept: boolean, why: string): void {
   if (p.status !== "active") return;
+  // Kept-promise trust diminishes with each promise the promiser has already
+  // kept this race: 8, 4, then 0. The first promises each race stay meaningful
+  // (at most 12 trust/promiser/race from promises); beyond that repetition
+  // stops paying, while each broken promise still costs 12. The count resets
+  // each festival so promise-keeping stays a live mechanic island-long.
+  const keptBefore = world.game.pledges.filter((x) => x.promiser === p.promiser && x.status === "kept" && (x.race ?? 0) === (p.race ?? 0)).length;
   p.status = kept ? "kept" : "broken";
-  const delta = kept ? PLEDGE_KEPT_GAIN : PLEDGE_BROKEN_COST;
+  const delta = kept ? Math.max(PLEDGE_KEPT_FLOOR, PLEDGE_KEPT_GAIN - PLEDGE_KEPT_STEP * keptBefore) : PLEDGE_BROKEN_COST;
   const mark = `${nameOf(world, p.promiser)} ${kept ? "kept" : "broke"} a promise to ${nameOf(world, p.promisee)} (${why})`;
   const memMark = `${nameOf3(world, p.promiser)} ${kept ? "kept" : "broke"} a promise to ${nameOf3(world, p.promisee)} (${why})`;
   shiftAffinity(world, p.promiser, p.promisee, delta, mark);
@@ -345,7 +357,17 @@ function applyRest(world: World, speaker: Character, kind: ActionKind, secret: S
     breakKeepPledges(world, speaker.id, secret.id);
     const subject = byId(world, secret.subject);
     const isSelf = secret.subject === speaker.id;
-    if (subject && !isSelf) {
+    if (subject && isSelf) {
+      // Self-exposure is no longer free: pre-empting a leak defuses the weapon
+      // (rivals cannot land the -10/-20 anymore) but everyone watching judges
+      // you for it. Still strictly cheaper than being exposed by someone else.
+      for (const c of world.characters) {
+        if (c.id === secret.subject) continue;
+        shiftAffinity(world, secret.subject, c.id, EXPOSE_SELF_WITNESS_COST, `${speaker.name} exposed their own secret`);
+      }
+      subject.mood = "sad";
+      remember(world, secret.subject, `(exposed) You exposed your own secret; people judged you for it.`);
+    } else if (subject) {
       // Priced consequences: the exposed resident with every witness, harsher with the leaker.
       for (const c of world.characters) {
         if (c.id === secret.subject) continue;
@@ -359,13 +381,16 @@ function applyRest(world: World, speaker: Character, kind: ActionKind, secret: S
     }
     remember(world, speaker.id, `(exposed) You exposed the secret about ${nameOf3(world, secret.subject)}.`);
     const text = `📣 Secret exposed: ${secret.text} (about ${nameOf(world, secret.subject)})`;
-    return { kind, event: text, note: isSelf ? "self-exposure: no affinity costs" : `costs applied (${EXPOSE_WITNESS_COST} witnesses, ${EXPOSE_LEAKER_COST} leaker)` };
+    return { kind, event: text, note: isSelf ? `self-exposure: costs ${EXPOSE_SELF_WITNESS_COST} with every other resident` : `costs applied (${EXPOSE_WITNESS_COST} witnesses, ${EXPOSE_LEAKER_COST} leaker)` };
   }
 
   // promise_keep / promise_tell: the promisee is the named conversation partner.
   const toName = typeof raw?.to === "string" ? raw.to : "";
   const target = findPresent(ctx, toName);
   if (!target || target.id === speaker.id) return { kind: "none" };
+  // Pledge scarcity: a resident can only have so many open promises at once.
+  const openPledges = g.pledges.filter((p) => p.promiser === speaker.id && p.status === "active").length;
+  if (openPledges >= MAX_ACTIVE_PLEDGES) return { kind: "none" };
   const campaigning = g.festival?.status === "campaigning" ? g.festival : null;
 
   if (kind === "promise_keep") {
@@ -416,6 +441,6 @@ export function gameViewFor(world: World, speakerId: string, tuning: GameTuning)
   if (!out.length) return "";
   return `Island game - you may attach ONE action to your line (only if it is legal right now; anything illegal is ignored):
 ${out.join("\n")}
-action choices: {"kind":"none"} (just talk) | {"kind":"endorse","candidate":"name"} or {"kind":"switch","candidate":"name"} to publicly back a festival candidate (never if YOU are a candidate) | {"kind":"hint","secret":N} tease a secret you know without revealing it | {"kind":"tell","secret":N,"to":"name"} privately reveal it (one-on-one ONLY) | {"kind":"expose","secret":N} make it island news (hurts them, and you) | {"kind":"promise_keep","secret":N,"to":"name"} vow to keep it until the festival | {"kind":"promise_tell","secret":N,"to":"name"} vow to tell them within 10 minutes.
+action choices: {"kind":"none"} (just talk) | {"kind":"endorse","candidate":"name"} or {"kind":"switch","candidate":"name"} to publicly back a festival candidate (never if YOU are a candidate) | {"kind":"hint","secret":N} tease a secret you know without revealing it | {"kind":"tell","secret":N,"to":"name"} privately reveal it (one-on-one ONLY) | {"kind":"expose","secret":N} make it island news (hurts them, and you - even exposing your own secret costs you a little with everyone) | {"kind":"promise_keep","secret":N,"to":"name"} vow to keep it until the festival | {"kind":"promise_tell","secret":N,"to":"name"} vow to tell them within 10 minutes. You can hold at most ${MAX_ACTIVE_PLEDGES} open promises, and each promise you keep in the same festival race earns less trust than the last (soon none at all) - promises are scarce, so choose them well.
 Secrets N refer to your numbered list above. Never reveal or hint at secrets not on your list.`;
 }
