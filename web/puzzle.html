@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://api.openai.com http://localhost:* http://127.0.0.1:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MiiU - Bridge Puzzle</title>
   <style>
@@ -55,12 +55,19 @@
       default; turn it on to see what they say. Restart replays this layout, New puzzle generates a fresh one.</p>
     </section>
     <aside>
+      <div class="panel" id="crewPanel">
+        <h2>Crew control</h2>
+        <p id="crewDriver" class="hint" style="margin:0 0 6px">Built-in logic (no model connected)</p>
+        <p id="crewLast" class="hint" style="margin:0 0 8px;display:none"></p>
+        <button id="crewSetupBtn" class="primary" style="width:100%">Connect a model</button>
+      </div>
       <div class="panel">
         <h2>The goal</h2>
         <p class="hint">River's in the way and the flag's on the far bank. Blocks and heavy beams are
         scattered on this side; every gap in the bridge needs one. A new layout is generated each
-        puzzle - the crew assigns jobs by who's free and closest, discovers which piece can be
-        placed next from what it can reach, and a beam only moves when two miis lift it together.</p>
+        puzzle, and a beam only moves when two miis lift it together. By default a built-in assigner
+        gives jobs by who's free and closest. Connect your own model (OpenAI key or your Ollama) and
+        it chooses the jobs instead - same rules, same reachability, the miis still do the lifting.</p>
         <button id="chatterBtn" class="primary" style="width:100%">Show chatter</button>
       </div>
       <div class="panel" id="logPanel" style="display:none">
