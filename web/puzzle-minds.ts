@@ -131,6 +131,15 @@ class CharacterMind {
     private events: MindEvents,
   ) {}
 
+  // Budget exhaustion is terminal for the run: void any held intention and
+  // invalidate any in-flight call (a late reply is stale and must not commit
+  // or mutate memory, exactly like a timed-out or pre-reset reply).
+  freeze() {
+    this.generation++;
+    this.committed = null;
+    this.inFlight = false;
+  }
+
   clearDeclinedNote(piece: string) {
     if (this.declinedNote === `declined the ask for ${piece}`) this.declinedNote = null;
   }
@@ -272,6 +281,7 @@ export class MindfulCrew implements CrewController {
   private calls = 0;
   private maxCalls: number;
   private exhaustedFlag = false;
+  private frozen = false;
   private appliedCount = 0;
   // piece -> (mindId -> reason): explicit refusals against an open beam ask.
   private declines = new Map<string, Map<string, string>>();
@@ -292,6 +302,7 @@ export class MindfulCrew implements CrewController {
   newPuzzle() {
     this.calls = 0;
     this.exhaustedFlag = false;
+    this.frozen = false;
     this.emitted.clear();
     this.declines.clear();
     for (const m of this.minds.values()) m.newPuzzle();
@@ -363,6 +374,7 @@ export class MindfulCrew implements CrewController {
 
   decide(view: DecisionView): ControllerReply {
     this.lastView = view;
+    if (this.frozen) return "pending"; // terminal failure: nothing runs, nothing is assigned
     const now = this.now();
     // Outcome feedback from the PREVIOUS emission: applied() clears accepted
     // moves synchronously in the same tick, so anything still here was
@@ -405,6 +417,17 @@ export class MindfulCrew implements CrewController {
       const prompt = buildAgentPrompt(mem.id, view, board, this.minds, this.declines, this.scenario);
       const system = `You are ${mem.name}, one of a small crew of island miis ${this.scenario.system}. You decide for yourself - nobody assigns you jobs. You see what the others announced and can claim work or answer a call for help. Reply only with JSON matching the schema.`;
       mind.consider(signature, prompt, system);
+    }
+
+    // A mind hit the budget while reconsidering: the run is over. Void every
+    // held intention, invalidate in-flight replies, emit nothing - the
+    // visitor is told the agents failed and can only restart with a new
+    // budget (a fresh puzzle generation).
+    if (this.exhaustedFlag) {
+      this.frozen = true;
+      this.emitted.clear();
+      for (const m of this.minds.values()) m.freeze();
+      return "pending";
     }
 
     // Turn committed moves into engine decisions.

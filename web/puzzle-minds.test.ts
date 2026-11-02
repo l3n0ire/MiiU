@@ -418,3 +418,65 @@ test("declines survive budget exhaustion - nobody is silently paired afterwards"
     assert.notEqual(s.state, "fallback", `${s.name}: exhaustion never switches a decliner to built-in`);
   }
 });
+
+test("budget failure is terminal: no decisions, no progress, no completion after exhaustion", async () => {
+  const clock = { t: 0 };
+  const selfish: Script = (me, prompt) => {
+    const taken = new Set(announcedBlocks(prompt));
+    const free = placeable(prompt).filter((p) => !p.heavy && !taken.has(p.id));
+    if (free.length) return { action: "claim", piece: free[0].id, reason: "mine" };
+    const beam = placeable(prompt).find((p) => p.heavy);
+    if (beam) return { action: "claim", piece: beam.id, reason: `${me} wants help on ${beam.id}` };
+    return { action: "wait", piece: "", reason: "waiting" };
+  };
+  const p = new BridgePuzzle(CREW, 11);
+  const caller = mindCaller(selfish);
+  const crew = new MindfulCrew(caller, () => clock.t, undefined, 6);
+  p.setController(crew);
+  await runWithMinds(p, crew, clock, 60);
+  assert.equal(crew.exhausted, true);
+  // let engine-side work that started before the failure settle out
+  await runWithMinds(p, crew, clock, 60);
+  const settled = p.decisionView();
+  const snap = (v: typeof settled) => JSON.stringify({
+    pieces: v.pieces.map((x) => [x.id, x.placed, x.claimed]),
+    inProgress: v.inProgress,
+  });
+  const before = snap(settled);
+  // simulate "Dismiss + Resume": the engine keeps ticking for a long while
+  await runWithMinds(p, crew, clock, 120);
+  assert.equal(snap(p.decisionView()), before, "NOTHING moves after the failure - no resume into silent progress");
+  assert.equal(caller.calls, 6, "no further calls");
+  assert.notEqual(p.status, "complete", "a failed run cannot complete");
+  for (const s of crew.statuses()) assert.notEqual(s.state, "fallback");
+});
+
+test("a reply in flight when the budget runs out is discarded - no late commit after failure", async () => {
+  const clock = { t: 10_000 };
+  const releases: ((v: unknown) => void)[] = [];
+  let calls = 0;
+  const caller: JsonCaller & { calls: number } = {
+    provider: "ollama", model: "fake-slow", calls: 0,
+    callJson<T>(): Promise<T> {
+      calls++; caller.calls = calls;
+      if (calls === 1) return new Promise<T>((resolve) => { releases.push(resolve as (v: unknown) => void); });
+      return Promise.resolve({ action: "wait", piece: "", reason: "watching" } as T);
+    },
+  };
+  const p = new BridgePuzzle(CREW, 7);
+  const crew = new MindfulCrew(caller, () => clock.t, undefined, 1); // one call total
+  p.setController(crew);
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  p.tick(0.05); await flush(); // call 1 in flight; the other three minds stall -> budget exhausted, crew frozen
+  assert.equal(crew.exhausted, true, "budget hit while the first call was in flight");
+  // the in-flight reply now lands AFTER the failure: it must be stale
+  releases.forEach((r) => r({ action: "claim", piece: "block-0", reason: "late answer after failure" }));
+  await flush(); await flush();
+  clock.t += 2000;
+  p.tick(0.05); await flush();
+  const pip = crew.statuses().find((s) => s.name === "Pip")!;
+  assert.notEqual(pip.lastReason, "late answer after failure", "late reply mutated nothing");
+  const view = p.decisionView();
+  assert.equal(view.inProgress.some((w) => w.piece === "block-0"), false, "late claim never reached the engine");
+  assert.equal(p.placedCount?.() ?? view.pieces.filter((x) => x.placed).length, 0, "nothing placed");
+});

@@ -554,7 +554,15 @@ function frame(now: number) {
   requestAnimationFrame(frame);
 }
 
-$("pauseBtn").addEventListener("click", () => { puzzle.paused = !puzzle.paused; });
+$("pauseBtn").addEventListener("click", () => {
+  // A failed run (budget used up) cannot be resumed into silent progress:
+  // re-open the failure dialog instead - the way forward is a restart.
+  if (!puzzle.paused || !(minds?.exhausted && puzzle.status !== "complete")) {
+    puzzle.paused = !puzzle.paused;
+    return;
+  }
+  showBudgetFailure();
+});
 $("restartBtn").addEventListener("click", () => reset(false));
 $("newBtn").addEventListener("click", () => reset(true));
 ($("speedRange") as HTMLInputElement).addEventListener("input", (e) => {
