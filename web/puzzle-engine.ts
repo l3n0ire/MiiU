@@ -76,6 +76,7 @@ export interface ChatterLine { t: number; speaker: string; text: string }
 export interface DecisionView {
   pieces: {
     id: string; kind: PieceKind; heavy: boolean; home: Vec; target: Vec;
+    bridge?: number; // multi-bridge puzzles tag which bridge a gap belongs to
     claimed: boolean; placed: boolean; placeable: boolean;
     distances: { member: string; d: number }[]; // free members only, tiles
   }[];
