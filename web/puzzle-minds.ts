@@ -34,6 +34,21 @@ import type {
   AssignmentDecision, ControllerReply, CrewController, DecisionView,
 } from "./puzzle-engine.ts";
 
+// The setting a crew of minds is playing. Defaults to the original bridge
+// puzzle; The Long Crossing passes its own two-river briefing. Only the
+// descriptive text changes - the action rules (claim/help/decline/wait, two
+// independent carriers per beam, no manufactured consent) are identical.
+export interface MindScenario {
+  system: string;      // setting sentence(s) for the system prompt
+  intro: string;       // first paragraph of the decision prompt
+  waitingNote: string; // why "not placeable yet" pieces are out of reach
+}
+export const BRIDGE_SCENARIO: MindScenario = {
+  system: "building a bridge together",
+  intro: "The crew is building a bridge across a river; each gap cell needs one piece carried over and placed. Blocks need one carrier. Beams are heavy and only move when TWO miis carry them together.",
+  waitingNote: "the bridge must grow toward them first",
+};
+
 export type MindState = "thinking" | "active" | "fallback";
 export interface MindStatus {
   id: string; name: string;
@@ -251,7 +266,11 @@ export class MindfulCrew implements CrewController {
   private lastView: DecisionView | null = null;
   readonly modelLabel: string;
 
-  constructor(private caller: JsonCaller, private now: () => number = () => Date.now()) {
+  constructor(
+    private caller: JsonCaller,
+    private now: () => number = () => Date.now(),
+    private scenario: MindScenario = BRIDGE_SCENARIO,
+  ) {
     this.modelLabel = `${caller.model} (${caller.provider === "openai" ? "OpenAI" : "Ollama"})`;
   }
 
@@ -356,8 +375,8 @@ export class MindfulCrew implements CrewController {
       // the piece is still open / the ask is still unanswered.
       if (mind.committed && commitmentViable(mind.committed, view, board)) continue;
       const signature = agentSignature(mem.id, view, board, mind);
-      const prompt = buildAgentPrompt(mem.id, view, board, this.minds, this.declines);
-      const system = `You are ${mem.name}, one of a small crew of island miis building a bridge together. You decide for yourself - nobody assigns you jobs. You see what the others announced and can claim work or answer a call for help. Reply only with JSON matching the schema.`;
+      const prompt = buildAgentPrompt(mem.id, view, board, this.minds, this.declines, this.scenario);
+      const system = `You are ${mem.name}, one of a small crew of island miis ${this.scenario.system}. You decide for yourself - nobody assigns you jobs. You see what the others announced and can claim work or answer a call for help. Reply only with JSON matching the schema.`;
       mind.consider(signature, prompt, system);
     }
 
@@ -447,6 +466,7 @@ function buildAgentPrompt(
   board: Board,
   minds: Map<string, CharacterMind>,
   declines: Map<string, Map<string, string>>,
+  scenario: MindScenario = BRIDGE_SCENARIO,
 ): string {
   const me = view.members.find((m) => m.id === memId)!;
   const nameOf = (id: string) => view.members.find((m) => m.id === id)?.name ?? id;
@@ -454,7 +474,8 @@ function buildAgentPrompt(
   const others = view.members.filter((m) => m.id !== memId);
   const pieceLine = (p: DecisionView["pieces"][number]) => {
     const mine = p.distances.find((d) => d.member === memId)?.d;
-    return `- ${p.id} (${p.heavy ? "beam - HEAVY, needs TWO carriers" : "block - one carrier"}), lying at (${p.home.x},${p.home.y}), fills gap (${p.target.x},${p.target.y}). Your distance: ${mine ?? "?"} tiles.`;
+    const where = p.bridge === undefined ? "" : `, on bridge ${p.bridge + 1}`;
+    return `- ${p.id} (${p.heavy ? "beam - HEAVY, needs TWO carriers" : "block - one carrier"}), lying at (${p.home.x},${p.home.y}), fills gap (${p.target.x},${p.target.y})${where}. Your distance: ${mine ?? "?"} tiles.`;
   };
   const placeable = view.pieces.filter((p) => p.placeable);
   const waiting = view.pieces.filter((p) => !p.placed && !p.claimed && !p.placeable);
@@ -468,7 +489,7 @@ function buildAgentPrompt(
   for (const [mid, piece] of board.helping) announcements.push(`${nameOf(mid)} agreed to help lift ${piece}.`);
   const memory = mind?.memoryLines() ?? [];
 
-  return `You are ${me.name}. The crew is building a bridge across a river; each gap cell needs one piece carried over and placed. Blocks need one carrier. Beams are heavy and only move when TWO miis carry them together.
+  return `You are ${me.name}. ${scenario.intro}
 
 You decide for yourself. There is no leader. You see the others' announced intentions below, and they see yours.
 
@@ -480,7 +501,7 @@ ${announcements.join("\n") || "(nobody has announced anything yet)"}
 
 Pieces that CAN be placed right now (someone can reach the spot next to their gap):
 ${placeable.map(pieceLine).join("\n") || "(none)"}
-${waiting.length ? `\nNot placeable yet (the bridge must grow toward them first): ${waiting.map((p) => p.id).join(", ")}` : ""}
+${waiting.length ? `\nNot placeable yet (${scenario.waitingNote}): ${waiting.map((p) => `${p.id}${p.bridge === undefined ? "" : ` (bridge ${p.bridge + 1})`}`).join(", ")}` : ""}
 ${view.inProgress.length ? `\nAlready being carried/placed: ${view.inProgress.map((w) => `${w.piece} with ${nameOf(w.lead)}${w.helper ? ` + ${nameOf(w.helper)}` : ""}`).join("; ")}` : ""}
 ${memory.length ? `\nWhat happened to your recent choices:\n${memory.map((l) => `- ${l}`).join("\n")}` : ""}
 

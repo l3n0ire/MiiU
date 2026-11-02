@@ -1,0 +1,500 @@
+// The Long Crossing page: renders the harder two-river cooperative scene
+// from crossing-engine.ts on a canvas. Chatter (short template lines from the engine)
+// is hidden by default - the scene is meant to read from actions alone.
+// Icons are inline SVG/text so they render identically everywhere (no emoji
+// font dependency).
+//
+// Crew control: by default the engine's built-in assigner picks jobs. The
+// visitor can connect their own model (their OpenAI key or their own Ollama -
+// same setup storage and key handling as the playground page, never sent
+// anywhere except the chosen provider) and then EVERY mii decides for itself
+// through puzzle-minds.ts: its own calls, its own memory, its own choice to
+// claim work, ask for a lift partner, or answer someone else's ask. The panel
+// always names each character's actual driver, including per-character
+// fallback to built-in logic.
+import { LongCrossing, CROSS_W as PUZZLE_W, CROSS_H as PUZZLE_H, type CrewMember } from "./crossing-engine.ts";
+import { MindfulCrew, type MindScenario } from "./puzzle-minds.ts";
+import { createJsonCaller } from "../server/llm-json.ts";
+import { migrateWorld, seedWorld } from "../server/world.ts";
+
+const TILE = 40;
+const canvas = document.getElementById("puzzleMap") as HTMLCanvasElement;
+const ctx = canvas.getContext("2d")!;
+canvas.width = PUZZLE_W * TILE;
+canvas.height = PUZZLE_H * TILE;
+const $ = (id: string) => document.getElementById(id)!;
+const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] ?? ch);
+
+// Crew: the visitor's own island residents when a save exists, else the seeds.
+// Reading the save only - the puzzle never writes to the island's data.
+function loadCrew(): CrewMember[] {
+  let chars: { id: string; name: string; color: string }[] = [];
+  try {
+    const raw = localStorage.getItem("miiu.world.v1");
+    if (raw) chars = migrateWorld(JSON.parse(raw)).characters;
+  } catch { /* unreadable save: fall through to seeds */ }
+  const seeds = seedWorld().characters;
+  const crew = chars.slice(0, 4);
+  for (let i = 0; crew.length < 4 && i < seeds.length; i++) {
+    if (!crew.some((c) => c.name === seeds[i].name)) crew.push(seeds[i]);
+  }
+  return crew.slice(0, 4).map((c) => ({ id: c.id, name: c.name, color: c.color }));
+}
+
+let seed = 7;
+const CROSSING_SCENARIO: MindScenario = {
+  system: "crossing TWO rivers together: bridge the first river, ferry materials across it, then bridge the second river so the whole crew can reach the flag",
+  intro: "The crew must cross TWO rivers with a rocky island between them. First build bridge 1 across the near river. Then materials can reach the island and the far bridge: bridge 2's block and one of its beams are lying on the island, but bridge 2's OTHER beam is still on this home bank - two miis must FERRY it across the finished bridge 1. Each gap cell needs one piece carried over and placed. Blocks need one carrier. Beams are heavy and only move when TWO miis carry them together. Far gaps are out of reach until the path to them exists.",
+  waitingNote: "the way to them does not exist yet - bridge 1 and the nearer far gaps come first",
+};
+
+let puzzle = new LongCrossing(loadCrew(), seed);
+let showChatter = false;
+let confetti: { x: number; y: number; vx: number; vy: number; color: string; t: number }[] = [];
+let celebrated = false;
+
+// ---- crew control (optional visitor-connected model) ----
+const SETUP_KEY = "miiu.setup.v1"; // shared with the playground page
+const KEY_KEY = "miiu.openai-key"; // only present when the visitor opted into remembering
+
+interface SavedSetup {
+  provider: "ollama" | "openai";
+  ollamaUrl?: string;
+  model?: string;
+  rememberKey?: boolean;
+}
+
+let minds: MindfulCrew | null = null;
+let sessionKey: string | null = null; // this tab only, when "remember" is unchecked
+
+function savedSetup(): SavedSetup | null {
+  try {
+    const raw = localStorage.getItem(SETUP_KEY);
+    return raw ? (JSON.parse(raw) as SavedSetup) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storedKey(): string | null {
+  return localStorage.getItem(KEY_KEY);
+}
+
+function attachMinds(setup: SavedSetup, key: string | null) {
+  try {
+    const caller = createJsonCaller({
+      provider: setup.provider,
+      ollamaUrl: setup.ollamaUrl || undefined,
+      openaiApiKey: key ?? undefined,
+      model: setup.model || undefined,
+    });
+    minds = new MindfulCrew(caller, undefined, CROSSING_SCENARIO);
+    puzzle.setController(minds);
+  } catch (err) {
+    console.error("Could not connect model:", err);
+    minds = null;
+    puzzle.setController(null);
+  }
+}
+
+function connectFromStorage() {
+  const setup = savedSetup();
+  if (!setup) return;
+  const key = sessionKey ?? storedKey();
+  if (setup.provider === "openai" && !key) return;
+  attachMinds(setup, key);
+}
+
+function renderCrewPanel() {
+  const driver = $("crewDriver");
+  const last = $("crewLast");
+  const btn = $("crewSetupBtn") as HTMLButtonElement;
+  if (!minds) {
+    driver.textContent = "Built-in logic (no model connected)";
+    last.style.display = "none";
+    btn.textContent = "Connect a model";
+    return;
+  }
+  btn.textContent = "Change model";
+  const stats = minds.stats();
+  const statuses = minds.statuses();
+  const fallen = statuses.filter((s) => s.state === "fallback").length;
+  driver.textContent = statuses.length > 0 && fallen === statuses.length
+    ? "Built-in logic - model unavailable for every mii"
+    : `Each mii decides for itself with ${minds.modelLabel}`;
+  const lines = statuses.map((s) => {
+    const tag = s.state === "fallback" ? "[built-in]" : s.state === "thinking" ? "[thinking]" : "[model]";
+    return `${tag} ${s.name}: ${s.detail}`;
+  });
+  if (stats.calls > 0) lines.push(`${stats.calls} model call${stats.calls === 1 ? "" : "s"} (one choice each), ${stats.decisionsApplied} job${stats.decisionsApplied === 1 ? "" : "s"} started this puzzle`);
+  last.textContent = lines.join("\n");
+  last.style.whiteSpace = "pre-line";
+  last.style.display = lines.length ? "" : "none";
+}
+
+function el(tag: string, attrs: Record<string, string> = {}): HTMLElement {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+function showCrewSetup() {
+  const existing = savedSetup();
+  const overlay = el("div", { id: "crewSetupOverlay" });
+  overlay.setAttribute("style", [
+    "position:fixed", "inset:0", "background:rgba(45,42,38,.45)", "z-index:1000",
+    "display:flex", "align-items:center", "justify-content:center", "padding:16px",
+  ].join(";"));
+  const card = el("div");
+  card.setAttribute("style", [
+    "background:#fffaf2", "color:#2d2a26", "border-radius:14px", "padding:20px",
+    "max-width:440px", "width:100%", "font:14px/1.45 ui-rounded,'SF Pro Rounded',system-ui,sans-serif",
+    "max-height:90vh", "overflow-y:auto",
+  ].join(";"));
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <h2 style="margin:0 0 4px;font-size:18px">Your crew, your model</h2>
+      <button type="button" id="crewClose" aria-label="Close setup" style="background:none;border:none;font-size:18px;cursor:pointer;color:#8a8278;padding:0 0 0 12px;line-height:1">✕</button>
+    </div>
+    <p style="margin:0 0 14px;color:#8a8278">A model <b>you</b> connect gives each mii its own decisions:
+    which piece to carry, when to ask for a partner on a heavy beam, and whether to answer someone
+    else's ask. Nobody is assigned jobs from above. They still walk, lift and place with the same
+    rules - and any mii whose model can't answer falls back to built-in logic, named per character.</p>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button type="button" id="crewProvOpenAI" style="flex:1">OpenAI key</button>
+      <button type="button" id="crewProvOllama" style="flex:1">My own Ollama</button>
+    </div>
+    <div id="crewPaneOpenAI">
+      <label style="font-size:13px;color:#8a8278">OpenAI API key</label>
+      <input id="crewKey" type="password" autocomplete="off" placeholder="sk-..." style="width:100%;margin:4px 0" />
+      <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin-bottom:8px">
+        <input id="crewRemember" type="checkbox" style="width:auto;margin:0" /> Remember the key on this device
+      </label>
+      <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Without the checkbox the key is kept only while this tab is open.
+      Either way it is sent only to api.openai.com when the crew needs a decision - this site serves static files and never receives it.
+      Each mii makes its own short calls when its situation changes (hard cap: 40 calls per puzzle; a mii that hits the cap, times out, or errors visibly switches to built-in logic for the rest of the puzzle, named per character). Anyone using this browser profile can use what you store here,
+      so prefer not remembering on shared devices.</p>
+      <label style="font-size:13px;color:#8a8278">Model (optional)</label>
+      <input id="crewModel" type="text" autocomplete="off" placeholder="default: gpt-6-luna" style="width:100%;margin:4px 0" />
+    </div>
+    <div id="crewPaneOllama" style="display:none">
+      <label style="font-size:13px;color:#8a8278">Ollama URL</label>
+      <input id="crewOllamaUrl" type="text" autocomplete="off" value="http://localhost:11434" style="width:100%;margin:4px 0" />
+      <label style="font-size:13px;color:#8a8278">Model (optional)</label>
+      <input id="crewOllamaModel" type="text" autocomplete="off" placeholder="default: gemma4-pi" style="width:100%;margin:4px 0" />
+      <ol style="font-size:12px;color:#8a8278;margin:0 0 10px;padding-left:18px">
+        <li>Start Ollama on this computer: <code>OLLAMA_ORIGINS=${location.origin} ollama serve</code></li>
+        <li>Allow "local network access" if the browser asks.</li>
+        <li>Keep Ollama running here - this page can only reach Ollama on this computer.</li>
+      </ol>
+      <button type="button" id="crewTestOllama">Test connection</button>
+      <span id="crewOllamaStatus" style="font-size:12px;margin-left:8px"></span>
+    </div>
+    <div id="crewSetupError" style="color:#b3261e;font-size:13px;min-height:18px;margin-top:8px"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button type="button" id="crewStart" style="flex:1;background:#ff7a59;border:none;color:#fff;padding:8px;border-radius:8px">Connect</button>
+      <button type="button" id="crewDisconnect" style="flex:1">Use built-in logic</button>
+    </div>`;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  const $c = (id: string) => card.querySelector(id) as HTMLElement & { value?: string; checked?: boolean };
+  let provider: "ollama" | "openai" = existing?.provider ?? "openai";
+  const paint = () => {
+    $c("#crewPaneOpenAI").style.display = provider === "openai" ? "" : "none";
+    $c("#crewPaneOllama").style.display = provider === "ollama" ? "" : "none";
+    $c("#crewProvOpenAI").style.fontWeight = provider === "openai" ? "700" : "400";
+    $c("#crewProvOllama").style.fontWeight = provider === "ollama" ? "700" : "400";
+  };
+  $c("#crewProvOpenAI").onclick = () => { provider = "openai"; paint(); };
+  $c("#crewProvOllama").onclick = () => { provider = "ollama"; paint(); };
+  if (existing?.model) { $c("#crewModel").value = existing.model; $c("#crewOllamaModel").value = existing.model; }
+  if (existing?.ollamaUrl) $c("#crewOllamaUrl").value = existing.ollamaUrl;
+  const hasKey = Boolean(storedKey());
+  if (hasKey) $c("#crewKey").value = "••••••••••••"; // hint a key is remembered; never echo it
+  $c("#crewRemember").checked = Boolean(existing?.rememberKey && hasKey);
+  paint();
+
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+  document.addEventListener("keydown", onKey);
+  $c("#crewClose").onclick = close;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+
+  $c("#crewTestOllama").onclick = async () => {
+    const status = $c("#crewOllamaStatus");
+    status.textContent = "checking…";
+    try {
+      const base = ($c("#crewOllamaUrl").value ?? "http://localhost:11434").replace(/\/$/, "");
+      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { models?: { name: string }[] };
+      status.textContent = `connected - ${body.models?.length ?? 0} model(s) installed`;
+    } catch {
+      status.textContent = "cannot reach Ollama - check it is running and OLLAMA_ORIGINS includes this site (see note above)";
+    }
+  };
+
+  $c("#crewStart").onclick = () => {
+    const err = $c("#crewSetupError");
+    let setup: SavedSetup;
+    if (provider === "openai") {
+      const typed = ($c("#crewKey").value ?? "").trim();
+      const key = typed && !typed.startsWith("•") ? typed : storedKey();
+      if (!key) { err.textContent = "Paste your OpenAI API key first."; return; }
+      sessionKey = key;
+      const remember = Boolean($c("#crewRemember").checked);
+      if (remember) localStorage.setItem(KEY_KEY, key); else localStorage.removeItem(KEY_KEY);
+      setup = { provider, model: $c("#crewModel").value?.trim() || undefined, rememberKey: remember };
+    } else {
+      setup = {
+        provider,
+        ollamaUrl: ($c("#crewOllamaUrl").value ?? "").trim() || "http://localhost:11434",
+        model: $c("#crewOllamaModel").value?.trim() || undefined,
+      };
+    }
+    localStorage.setItem(SETUP_KEY, JSON.stringify(setup));
+    attachMinds(setup, sessionKey ?? storedKey());
+    close();
+    renderCrewPanel();
+  };
+
+  $c("#crewDisconnect").onclick = () => {
+    minds = null;
+    puzzle.setController(null);
+    localStorage.removeItem(SETUP_KEY); // connecting again is a fresh choice
+    close();
+    renderCrewPanel();
+  };
+}
+
+function reset(newSeed: boolean) {
+  if (newSeed) seed = Math.floor(Math.random() * 100000);
+  puzzle = new LongCrossing(loadCrew(), seed);
+  if (minds) { minds.newPuzzle(); puzzle.setController(minds); }
+  confetti = [];
+  celebrated = false;
+  $("winBanner").style.display = "none";
+  ($("pauseBtn") as HTMLButtonElement).textContent = "Pause";
+  renderLog();
+}
+
+function renderLog() {
+  const log = $("puzzleLog");
+  log.innerHTML = puzzle.log.slice(-30).map((l) =>
+    `<div class="pline"><b>${esc(l.speaker)}</b> ${esc(l.text)}</div>`).join("") || '<p class="empty">Nothing yet.</p>';
+  log.scrollTop = log.scrollHeight;
+}
+
+// Action labels and bubbles are small; when members cluster (e.g. both ends of
+// a beam) their labels would overlap. Track drawn rects per frame and nudge up.
+const drawn: { x0: number; y0: number; x1: number; y1: number }[] = [];
+function fits(x0: number, y0: number, x1: number, y1: number): boolean {
+  return drawn.every((r) => x1 < r.x0 || x0 > r.x1 || y1 < r.y0 || y0 > r.y1);
+}
+function labelY(cx: number, base: number, w: number, h: number): number {
+  let y = base;
+  while (!fits(cx - w / 2, y - h, cx + w / 2, y) && y > 20) y -= h + 2;
+  drawn.push({ x0: cx - w / 2, y0: y - h, x1: cx + w / 2, y1: y });
+  return y;
+}
+
+function draw() {
+  drawn.length = 0;
+  const s = puzzle.snapshot();
+  const flag = s.flag;
+  // banks
+  ctx.fillStyle = "#a8d8a0";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "rgba(0,0,0,0.03)";
+  for (let x = 0; x < PUZZLE_W; x++) for (let y = 0; y < PUZZLE_H; y++) if ((x + y) % 2 === 0) ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
+  // island between the rivers (rocky)
+  const r0 = s.rivers[0], r1 = s.rivers[1];
+  ctx.fillStyle = "#c9c2b4";
+  ctx.fillRect((r0.x1 + 1) * TILE, 0, (r1.x0 - r0.x1 - 1) * TILE, canvas.height);
+  // rivers
+  for (const r of s.rivers) {
+    ctx.fillStyle = "#6db6e8";
+    ctx.fillRect(r.x0 * TILE, 0, (r.x1 - r.x0 + 1) * TILE, canvas.height);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 2;
+    for (let y = 0; y < PUZZLE_H; y++) {
+      ctx.beginPath();
+      for (let x = r.x0; x <= r.x1 + 1; x++) {
+        const px = x * TILE, py = y * TILE + TILE / 2 + Math.sin(s.t * 2 + x + y) * 3;
+        if (x === r.x0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+  }
+  // goal flag
+  const fx = (flag.x + 0.5) * TILE, fy = (flag.y + 0.5) * TILE;
+  ctx.strokeStyle = "#5a4a3a";
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(fx, fy + 14); ctx.lineTo(fx, fy - 16); ctx.stroke();
+  ctx.fillStyle = "#ff7a59";
+  ctx.beginPath(); ctx.moveTo(fx, fy - 16); ctx.lineTo(fx + 16, fy - 10); ctx.lineTo(fx, fy - 4); ctx.closePath(); ctx.fill();
+  // unfilled gap cells (both bridges)
+  for (const cell of s.gaps) {
+    if (cell.filled) continue;
+    ctx.strokeStyle = "rgba(255,255,255,0.8)";
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cell.x * TILE + 4, cell.y * TILE + 8, TILE - 8, TILE - 16);
+    ctx.setLineDash([]);
+  }
+  // pieces
+  for (const p of s.pieces) {
+    const px = p.x * TILE, py = p.y * TILE;
+    if (p.kind === "block") {
+      ctx.fillStyle = p.state === "placed" ? "#c08552" : "#d99a5b";
+      ctx.fillRect(px - 14, py - 10, 28, 20);
+      ctx.strokeStyle = "#8a5a30";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px - 14, py - 10, 28, 20);
+    } else {
+      ctx.fillStyle = p.state === "placed" ? "#a5713f" : "#c08552";
+      ctx.fillRect(px - 18, py - 6, 36, 12);
+      ctx.strokeStyle = "#7a4a20";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px - 18, py - 6, 36, 12);
+      ctx.fillStyle = "#7a4a20";
+      ctx.beginPath(); ctx.arc(px - 10, py, 2.5, 0, 7); ctx.arc(px + 10, py, 2.5, 0, 7); ctx.fill();
+    }
+  }
+  // members
+  for (const m of s.members) {
+    const mx = m.x * TILE, my = m.y * TILE;
+    const bounce = m.state === "celebrating" ? Math.abs(Math.sin(s.t * 6 + m.x)) * 6 : 0;
+    ctx.fillStyle = m.color;
+    ctx.beginPath(); ctx.arc(mx, my - 4 - bounce, 11, 0, 7); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.25)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 11px ui-rounded, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(m.name.slice(0, 1).toUpperCase(), mx, my - 1 - bounce);
+    ctx.fillStyle = "rgba(45,42,38,0.85)";
+    ctx.font = "10px ui-rounded, system-ui, sans-serif";
+    const nameW = ctx.measureText(m.name).width;
+    const nameY = labelY(mx, my + 16 - bounce, nameW, 11);
+    ctx.fillText(m.name, mx, nameY);
+    // action label: what they're doing, always visible (except celebrating)
+    const labels: Record<string, string> = {
+      fetching: "fetching", waiting: "needs help!", helping: "going to help",
+      carrying: m.carrying === "beam" ? "carrying together" : "carrying",
+      placing: "placing", crossing: "crossing!",
+    };
+    const label = labels[m.state];
+    if (label) {
+      ctx.font = "italic 9px ui-rounded, system-ui, sans-serif";
+      const lw = ctx.measureText(label).width;
+      const ly = labelY(mx, nameY + 11, lw, 10);
+      ctx.fillStyle = "rgba(45,42,38,0.6)";
+      ctx.fillText(label, mx, ly);
+    }
+    // chatter bubble: only when the user opted in
+    if (showChatter && m.bubble) {
+      ctx.font = "11px ui-rounded, system-ui, sans-serif";
+      const w = ctx.measureText(m.bubble).width + 14;
+      const bx = Math.min(Math.max(mx - w / 2, 4), canvas.width - w - 4);
+      const by = labelY(mx, my - 46 - bounce, w, 18) - 8;
+      ctx.fillStyle = "rgba(255,250,242,0.95)";
+      ctx.strokeStyle = "rgba(0,0,0,0.15)";
+      ctx.beginPath();
+      ctx.roundRect(bx, by - 14, w, 20, 8);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#2d2a26";
+      ctx.fillText(m.bubble, bx + w / 2, by);
+    }
+  }
+  // confetti on completion
+  if (s.status === "complete" && !celebrated) {
+    celebrated = true;
+    for (let i = 0; i < 80; i++) {
+      confetti.push({
+        x: fx + (Math.random() - 0.5) * 80, y: fy - 20,
+        vx: (Math.random() - 0.5) * 160, vy: -60 - Math.random() * 120,
+        color: ["#ff7a59", "#4a90d9", "#b36bd6", "#3fb57a", "#f2b134"][i % 5],
+        t: 0,
+      });
+    }
+    $("winBanner").style.display = "";
+    $("winStats").textContent = `Built in ${Math.round(s.elapsed)}s of island time - ${s.totalPieces} pieces placed across two rivers, ${s.assists} team lift${s.assists === 1 ? "" : "s"}.`;
+  }
+  confetti = confetti.filter((c) => c.t < 2.5);
+  for (const c of confetti) {
+    c.t += 1 / 60; c.x += c.vx / 60; c.y += c.vy / 60; c.vy += 220 / 60;
+    ctx.fillStyle = c.color;
+    ctx.fillRect(c.x, c.y, 5, 5);
+  }
+  // "Now" line: the current action in plain readable text, outside the
+  // canvas, so it stays legible on small screens where in-canvas labels shrink.
+  $("nowLine").textContent = nowLine(s);
+  const b1 = s.gaps.filter((g) => g.bridge === 0 && g.filled).length;
+  const b2 = s.gaps.filter((g) => g.bridge === 1 && g.filled).length;
+  $("puzzleStatus").textContent = s.paused
+    ? `Paused - puzzle #${s.seed}`
+    : s.status === "complete"
+      ? `Both bridges built - everyone across! - puzzle #${s.seed}`
+      : s.status === "crossing"
+        ? `Both bridges built - crew crossing - ${s.crossedCount}/${s.members.length} across - puzzle #${s.seed}`
+        : `Bridge 1: ${b1}/3 - Bridge 2: ${b2}/3 - puzzle #${s.seed}`;
+  ($("pauseBtn") as HTMLButtonElement).textContent = s.paused ? "Resume" : "Pause";
+}
+
+function nowLine(s: ReturnType<LongCrossing["snapshot"]>): string {
+  if (s.status === "complete") return "Both bridges built - the whole crew made it across.";
+  if (s.status === "crossing") return `Both bridges built - the crew is crossing (${s.crossedCount}/${s.members.length} across).`;
+  const byId = new Map(s.members.map((m) => [m.id, m]));
+  const placing = s.members.find((m) => m.state === "placing");
+  if (placing) return `${placing.name} is placing a ${placing.carrying ?? "piece"} into a bridge.`;
+  const lift = s.pieces.find((p) => p.state === "carried" && p.carriers.length >= 2);
+  if (lift) {
+    const names = lift.carriers.map((id) => byId.get(id)?.name ?? "?").join(" + ");
+    return `${names} are carrying the ${lift.kind} together.`;
+  }
+  const crossing = s.members.find((m) => m.state === "crossing");
+  if (crossing) return `${crossing.name} is crossing toward the flag.`;
+  const carrying = s.members.find((m) => m.state === "carrying" && m.carrying);
+  if (carrying) return `${carrying.name} is carrying a ${carrying.carrying}.`;
+  const helping = s.members.find((m) => m.state === "helping" || m.state === "waiting");
+  if (helping) return `${helping.name} is getting in place to help lift.`;
+  const fetching = s.members.find((m) => m.state === "fetching");
+  if (fetching) return `${fetching.name} is heading for a piece.`;
+  return "";
+}
+
+let last = performance.now();
+let logTimer = 0;
+let crewTimer = 0;
+function frame(now: number) {
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  puzzle.tick(dt);
+  draw();
+  logTimer += dt;
+  if (showChatter && logTimer > 0.5) { logTimer = 0; renderLog(); }
+  crewTimer += dt;
+  if (crewTimer > 0.5) { crewTimer = 0; renderCrewPanel(); }
+  requestAnimationFrame(frame);
+}
+
+$("pauseBtn").addEventListener("click", () => { puzzle.paused = !puzzle.paused; });
+$("restartBtn").addEventListener("click", () => reset(false));
+$("newBtn").addEventListener("click", () => reset(true));
+($("speedRange") as HTMLInputElement).addEventListener("input", (e) => {
+  puzzle.speed = Math.max(0.25, Math.min(4, Number((e.target as HTMLInputElement).value) || 1));
+});
+$("crewSetupBtn").addEventListener("click", () => showCrewSetup());
+$("chatterBtn").addEventListener("click", () => {
+  showChatter = !showChatter;
+  $("chatterBtn").textContent = showChatter ? "Hide chatter" : "Show chatter";
+  $("logPanel").style.display = showChatter ? "" : "none";
+  if (showChatter) renderLog();
+});
+
+connectFromStorage();
+renderCrewPanel();
+requestAnimationFrame(frame);

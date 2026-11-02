@@ -166,7 +166,7 @@ function showCrewSetup() {
       </label>
       <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Without the checkbox the key is kept only while this tab is open.
       Either way it is sent only to api.openai.com when the crew needs a decision - this site serves static files and never receives it.
-      Each mii makes its own short calls when its situation changes (hard cap: 40 calls per puzzle). Anyone using this browser profile can use what you store here,
+      Each mii makes its own short calls when its situation changes (hard cap: 40 calls per puzzle; a mii that hits the cap, times out, or errors visibly switches to built-in logic for the rest of the puzzle, named per character). Anyone using this browser profile can use what you store here,
       so prefer not remembering on shared devices.</p>
       <label style="font-size:13px;color:#8a8278">Model (optional)</label>
       <input id="crewModel" type="text" autocomplete="off" placeholder="default: gpt-6-luna" style="width:100%;margin:4px 0" />

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://api.openai.com http://localhost:* http://127.0.0.1:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MiiU - The Long Crossing</title>
+  <style>
+    :root { --bg: #f4efe6; --panel: #fffaf2; --ink: #2d2a26; --muted: #8a8278; --line: #e4dccd; --accent: #ff7a59; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.4 ui-rounded, "SF Pro Rounded", system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+    header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+    header h1 { font-size: 18px; margin: 0 8px 0 0; }
+    header a { color: var(--muted); text-decoration: none; font-size: 13px; }
+    header a:hover { color: var(--ink); }
+    #puzzleStatus { color: var(--muted); flex: 1; min-width: 200px; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; padding: 16px; max-width: 1280px; margin: 0 auto; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+    #puzzleMap { width: 100%; height: auto; display: block; border-radius: 10px; image-rendering: pixelated; }
+    button { font: inherit; border: 1px solid var(--line); background: white; border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    #puzzleLog { max-height: 420px; overflow-y: auto; }
+    .pline { padding: 4px 0; border-bottom: 1px dashed var(--line); }
+    .pline b { font-weight: 600; }
+    .empty { color: var(--muted); }
+    #winBanner { background: #fff1d6; border-radius: 10px; padding: 12px; margin-bottom: 16px; }
+    #winBanner b { display: block; margin-bottom: 2px; }
+    #winStats { color: var(--muted); font-size: 13px; }
+    .hint { color: var(--muted); font-size: 13px; }
+    #nowLine { font-size: 15px; font-weight: 600; margin: 8px 2px 0; min-height: 1.3em; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><svg width="20" height="14" viewBox="0 0 20 14" style="vertical-align:-2px" aria-hidden="true"><path d="M0 10h20v3H0z" fill="#8a5a30"/><path d="M2 10c2-6 6-6 8 0M10 10c2-6 6-6 8 0" stroke="#8a5a30" stroke-width="1.6" fill="none"/></svg> The Long Crossing</h1>
+    <a href="index.html">← All experiences</a>
+    <span id="puzzleStatus">loading…</span>
+    <button id="pauseBtn">Pause</button>
+    <label class="row">Speed <input id="speedRange" type="range" min="0.25" max="4" step="0.25" value="1" style="width:100px;margin:0" /></label>
+    <button id="restartBtn">Restart</button>
+    <button id="newBtn">New puzzle</button>
+  </header>
+  <main>
+    <section>
+      <div id="winBanner" style="display:none">
+        <b>The crew built both bridges and made it across!</b>
+        <span id="winStats"></span>
+      </div>
+      <div class="panel"><canvas id="puzzleMap"></canvas></div>
+      <p id="nowLine" aria-live="polite"></p>
+      <p class="hint">Watch what they do - fetching, ferrying, helping, carrying, placing. Chatter is hidden by
+      default; turn it on to see what they say. Restart replays this layout, New puzzle generates a fresh one.</p>
+    </section>
+    <aside>
+      <div class="panel" id="crewPanel">
+        <h2>Crew control</h2>
+        <p id="crewDriver" class="hint" style="margin:0 0 6px">Built-in logic (no model connected)</p>
+        <p id="crewLast" class="hint" style="margin:0 0 8px;display:none"></p>
+        <button id="crewSetupBtn" class="primary" style="width:100%">Connect a model</button>
+      </div>
+      <div class="panel">
+        <h2>The goal</h2>
+        <p class="hint">The harder crossing: TWO rivers, a rocky island between them, and the flag on the
+        far bank. Bridge the near river first, then ferry materials across it - one of the far bridge's
+        heavy beams is still on this bank and needs two carriers over bridge one - then build the far
+        bridge and bring everyone over. Six pieces, three of them heavy, four miis. A new layout is
+        generated each puzzle. By default a built-in assigner gives jobs by who's free and closest.
+        Connect your own model (OpenAI key or your Ollama) and every mii decides for itself instead -
+        claiming work, asking for a lift partner, answering or declining each other's asks. Same rules,
+        same reachability, the miis still do the lifting.</p>
+        <button id="chatterBtn" class="primary" style="width:100%">Show chatter</button>
+      </div>
+      <div class="panel" id="logPanel" style="display:none">
+        <h2>Chatter</h2>
+        <div id="puzzleLog"></div>
+      </div>
+    </aside>
+  </main>
+  <script src="crossing-bundle.js"></script>
+</body>
+</html>
