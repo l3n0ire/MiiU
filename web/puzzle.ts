@@ -3,7 +3,16 @@
 // is hidden by default - the scene is meant to read from actions alone.
 // Icons are inline SVG/text so they render identically everywhere (no emoji
 // font dependency).
+//
+// Crew control: by default the engine's built-in assigner picks jobs. The
+// visitor can connect their own model (their OpenAI key or their own Ollama -
+// same setup storage and key handling as the playground page, never sent
+// anywhere except the chosen provider) and the model then chooses the crew's
+// jobs through puzzle-brain.ts. The driver line always names who is actually
+// deciding, including when it falls back to built-in logic.
 import { BridgePuzzle, PUZZLE_W, PUZZLE_H, type CrewMember } from "./puzzle-engine.ts";
+import { PuzzleBrain } from "./puzzle-brain.ts";
+import { createJsonCaller } from "../server/llm-json.ts";
 import { migrateWorld, seedWorld } from "../server/world.ts";
 
 const TILE = 40;
@@ -36,9 +45,218 @@ let showChatter = false;
 let confetti: { x: number; y: number; vx: number; vy: number; color: string; t: number }[] = [];
 let celebrated = false;
 
+// ---- crew control (optional visitor-connected model) ----
+const SETUP_KEY = "miiu.setup.v1"; // shared with the playground page
+const KEY_KEY = "miiu.openai-key"; // only present when the visitor opted into remembering
+
+interface SavedSetup {
+  provider: "ollama" | "openai";
+  ollamaUrl?: string;
+  model?: string;
+  rememberKey?: boolean;
+}
+
+let brain: PuzzleBrain | null = null;
+let sessionKey: string | null = null; // this tab only, when "remember" is unchecked
+
+function savedSetup(): SavedSetup | null {
+  try {
+    const raw = localStorage.getItem(SETUP_KEY);
+    return raw ? (JSON.parse(raw) as SavedSetup) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storedKey(): string | null {
+  return localStorage.getItem(KEY_KEY);
+}
+
+function attachBrain(setup: SavedSetup, key: string | null) {
+  try {
+    const caller = createJsonCaller({
+      provider: setup.provider,
+      ollamaUrl: setup.ollamaUrl || undefined,
+      openaiApiKey: key ?? undefined,
+      model: setup.model || undefined,
+    });
+    brain = new PuzzleBrain(caller);
+    puzzle.setController(brain);
+  } catch (err) {
+    console.error("Could not connect model:", err);
+    brain = null;
+    puzzle.setController(null);
+  }
+}
+
+function connectFromStorage() {
+  const setup = savedSetup();
+  if (!setup) return;
+  const key = sessionKey ?? storedKey();
+  if (setup.provider === "openai" && !key) return;
+  attachBrain(setup, key);
+}
+
+function renderCrewPanel() {
+  const driver = $("crewDriver");
+  const last = $("crewLast");
+  const btn = $("crewSetupBtn") as HTMLButtonElement;
+  if (!brain) {
+    driver.textContent = "Built-in logic (no model connected)";
+    last.style.display = "none";
+    btn.textContent = "Connect a model";
+    return;
+  }
+  const s = brain.status();
+  driver.textContent = s.detail;
+  btn.textContent = "Change model";
+  const bits: string[] = [];
+  if (s.decisionsApplied > 0) bits.push(`${s.decisionsApplied} model decision${s.decisionsApplied === 1 ? "" : "s"} made`);
+  if (s.lastReason && s.state === "active") bits.push(`Last call: \u201c${s.lastReason}\u201d`);
+  if (s.state === "fallback" && s.decisionsApplied === 0) bits.push("No model moves yet this puzzle");
+  last.textContent = bits.join(" - ");
+  last.style.display = bits.length ? "" : "none";
+}
+
+function el(tag: string, attrs: Record<string, string> = {}): HTMLElement {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+function showCrewSetup() {
+  const existing = savedSetup();
+  const overlay = el("div", { id: "crewSetupOverlay" });
+  overlay.setAttribute("style", [
+    "position:fixed", "inset:0", "background:rgba(45,42,38,.45)", "z-index:1000",
+    "display:flex", "align-items:center", "justify-content:center", "padding:16px",
+  ].join(";"));
+  const card = el("div");
+  card.setAttribute("style", [
+    "background:#fffaf2", "color:#2d2a26", "border-radius:14px", "padding:20px",
+    "max-width:440px", "width:100%", "font:14px/1.45 ui-rounded,'SF Pro Rounded',system-ui,sans-serif",
+    "max-height:90vh", "overflow-y:auto",
+  ].join(";"));
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <h2 style="margin:0 0 4px;font-size:18px">Your crew, your model</h2>
+      <button type="button" id="crewClose" aria-label="Close setup" style="background:none;border:none;font-size:18px;cursor:pointer;color:#8a8278;padding:0 0 0 12px;line-height:1">✕</button>
+    </div>
+    <p style="margin:0 0 14px;color:#8a8278">A model <b>you</b> connect chooses which piece the crew works next
+    and who carries it. The miis still walk, lift and place with the same rules - and if the model
+    can't answer, the built-in logic takes over and says so.</p>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button type="button" id="crewProvOpenAI" style="flex:1">OpenAI key</button>
+      <button type="button" id="crewProvOllama" style="flex:1">My own Ollama</button>
+    </div>
+    <div id="crewPaneOpenAI">
+      <label style="font-size:13px;color:#8a8278">OpenAI API key</label>
+      <input id="crewKey" type="password" autocomplete="off" placeholder="sk-..." style="width:100%;margin:4px 0" />
+      <label style="font-size:13px;display:flex;gap:6px;align-items:center;margin-bottom:8px">
+        <input id="crewRemember" type="checkbox" style="width:auto;margin:0" /> Remember the key on this device
+      </label>
+      <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Without the checkbox the key is kept only while this tab is open.
+      Either way it is sent only to api.openai.com when the crew needs a decision - this site serves static files and never receives it.
+      Each decision is one short model call, a handful per puzzle. Anyone using this browser profile can use what you store here,
+      so prefer not remembering on shared devices.</p>
+      <label style="font-size:13px;color:#8a8278">Model (optional)</label>
+      <input id="crewModel" type="text" autocomplete="off" placeholder="default: gpt-6-luna" style="width:100%;margin:4px 0" />
+    </div>
+    <div id="crewPaneOllama" style="display:none">
+      <label style="font-size:13px;color:#8a8278">Ollama URL</label>
+      <input id="crewOllamaUrl" type="text" autocomplete="off" value="http://localhost:11434" style="width:100%;margin:4px 0" />
+      <label style="font-size:13px;color:#8a8278">Model (optional)</label>
+      <input id="crewOllamaModel" type="text" autocomplete="off" placeholder="default: gemma4-pi" style="width:100%;margin:4px 0" />
+      <ol style="font-size:12px;color:#8a8278;margin:0 0 10px;padding-left:18px">
+        <li>Start Ollama on this computer: <code>OLLAMA_ORIGINS=${location.origin} ollama serve</code></li>
+        <li>Allow "local network access" if the browser asks.</li>
+        <li>Keep Ollama running here - this page can only reach Ollama on this computer.</li>
+      </ol>
+      <button type="button" id="crewTestOllama">Test connection</button>
+      <span id="crewOllamaStatus" style="font-size:12px;margin-left:8px"></span>
+    </div>
+    <div id="crewSetupError" style="color:#b3261e;font-size:13px;min-height:18px;margin-top:8px"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button type="button" id="crewStart" style="flex:1;background:#ff7a59;border:none;color:#fff;padding:8px;border-radius:8px">Connect</button>
+      <button type="button" id="crewDisconnect" style="flex:1">Use built-in logic</button>
+    </div>`;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  const $c = (id: string) => card.querySelector(id) as HTMLElement & { value?: string; checked?: boolean };
+  let provider: "ollama" | "openai" = existing?.provider ?? "openai";
+  const paint = () => {
+    $c("#crewPaneOpenAI").style.display = provider === "openai" ? "" : "none";
+    $c("#crewPaneOllama").style.display = provider === "ollama" ? "" : "none";
+    $c("#crewProvOpenAI").style.fontWeight = provider === "openai" ? "700" : "400";
+    $c("#crewProvOllama").style.fontWeight = provider === "ollama" ? "700" : "400";
+  };
+  $c("#crewProvOpenAI").onclick = () => { provider = "openai"; paint(); };
+  $c("#crewProvOllama").onclick = () => { provider = "ollama"; paint(); };
+  if (existing?.model) { $c("#crewModel").value = existing.model; $c("#crewOllamaModel").value = existing.model; }
+  if (existing?.ollamaUrl) $c("#crewOllamaUrl").value = existing.ollamaUrl;
+  const hasKey = Boolean(storedKey());
+  if (hasKey) $c("#crewKey").value = "••••••••••••"; // hint a key is remembered; never echo it
+  $c("#crewRemember").checked = Boolean(existing?.rememberKey && hasKey);
+  paint();
+
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+  document.addEventListener("keydown", onKey);
+  $c("#crewClose").onclick = close;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+
+  $c("#crewTestOllama").onclick = async () => {
+    const status = $c("#crewOllamaStatus");
+    status.textContent = "checking…";
+    try {
+      const base = ($c("#crewOllamaUrl").value ?? "http://localhost:11434").replace(/\/$/, "");
+      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { models?: { name: string }[] };
+      status.textContent = `connected - ${body.models?.length ?? 0} model(s) installed`;
+    } catch {
+      status.textContent = "cannot reach Ollama - check it is running and OLLAMA_ORIGINS includes this site (see note above)";
+    }
+  };
+
+  $c("#crewStart").onclick = () => {
+    const err = $c("#crewSetupError");
+    let setup: SavedSetup;
+    if (provider === "openai") {
+      const typed = ($c("#crewKey").value ?? "").trim();
+      const key = typed && !typed.startsWith("•") ? typed : storedKey();
+      if (!key) { err.textContent = "Paste your OpenAI API key first."; return; }
+      sessionKey = key;
+      const remember = Boolean($c("#crewRemember").checked);
+      if (remember) localStorage.setItem(KEY_KEY, key); else localStorage.removeItem(KEY_KEY);
+      setup = { provider, model: $c("#crewModel").value?.trim() || undefined, rememberKey: remember };
+    } else {
+      setup = {
+        provider,
+        ollamaUrl: ($c("#crewOllamaUrl").value ?? "").trim() || "http://localhost:11434",
+        model: $c("#crewOllamaModel").value?.trim() || undefined,
+      };
+    }
+    localStorage.setItem(SETUP_KEY, JSON.stringify(setup));
+    attachBrain(setup, sessionKey ?? storedKey());
+    close();
+    renderCrewPanel();
+  };
+
+  $c("#crewDisconnect").onclick = () => {
+    brain = null;
+    puzzle.setController(null);
+    localStorage.removeItem(SETUP_KEY); // connecting again is a fresh choice
+    close();
+    renderCrewPanel();
+  };
+}
+
 function reset(newSeed: boolean) {
   if (newSeed) seed = Math.floor(Math.random() * 100000);
   puzzle = new BridgePuzzle(loadCrew(), seed);
+  if (brain) { brain.newPuzzle(); puzzle.setController(brain); }
   confetti = [];
   celebrated = false;
   $("winBanner").style.display = "none";
@@ -227,6 +445,7 @@ function nowLine(s: ReturnType<BridgePuzzle["snapshot"]>): string {
 
 let last = performance.now();
 let logTimer = 0;
+let crewTimer = 0;
 function frame(now: number) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
@@ -234,6 +453,8 @@ function frame(now: number) {
   draw();
   logTimer += dt;
   if (showChatter && logTimer > 0.5) { logTimer = 0; renderLog(); }
+  crewTimer += dt;
+  if (crewTimer > 0.5) { crewTimer = 0; renderCrewPanel(); }
   requestAnimationFrame(frame);
 }
 
@@ -243,6 +464,7 @@ $("newBtn").addEventListener("click", () => reset(true));
 ($("speedRange") as HTMLInputElement).addEventListener("input", (e) => {
   puzzle.speed = Math.max(0.25, Math.min(4, Number((e.target as HTMLInputElement).value) || 1));
 });
+$("crewSetupBtn").addEventListener("click", () => showCrewSetup());
 $("chatterBtn").addEventListener("click", () => {
   showChatter = !showChatter;
   $("chatterBtn").textContent = showChatter ? "Hide chatter" : "Show chatter";
@@ -250,4 +472,6 @@ $("chatterBtn").addEventListener("click", () => {
   if (showChatter) renderLog();
 });
 
+connectFromStorage();
+renderCrewPanel();
 requestAnimationFrame(frame);

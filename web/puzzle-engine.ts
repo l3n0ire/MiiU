@@ -11,9 +11,18 @@
 //     re-evaluated every tick;
 //   - the two-carrier rule on beams is a mechanic, and helper recruitment is
 //     dynamic (nearest other free member).
-// It is NOT a general planner with backtracking, NOT an LLM, NOT learned
-// behavior, and the Miis do not negotiate. Chatter is template lines and is
-// hidden by default in the UI.
+// It is NOT a general planner with backtracking, NOT learned behavior, and
+// the Miis do not negotiate. Chatter is template lines and is hidden by
+// default in the UI.
+//
+// OPTIONAL MODEL CONTROL: a CrewController (web/puzzle-brain.ts) can replace
+// the assignment step with decisions from a visitor-connected LLM (Ollama or
+// OpenAI). The model only CHOOSES jobs - which piece next, who carries - from
+// the same feasibility view the built-in assigner uses. The engine revalidates
+// every model decision before applying it (piece placeable, members free,
+// beams get two carriers), and all movement, pathing, lifting and placing
+// mechanics stay code-driven. Without a connected model, or whenever the model
+// fails or answers nonsense, the built-in assigner runs and the UI says so.
 
 export interface Vec { x: number; y: number }
 export interface CrewMember { id: string; name: string; color: string }
@@ -60,6 +69,29 @@ export interface Member {
 }
 
 export interface ChatterLine { t: number; speaker: string; text: string }
+
+// Decision surface handed to an optional CrewController (e.g. the LLM brain).
+// It mirrors exactly what the built-in assigner can act on: which pieces are
+// placeable right now, who is free, and what is already in progress.
+export interface DecisionView {
+  pieces: {
+    id: string; kind: PieceKind; heavy: boolean; home: Vec; target: Vec;
+    claimed: boolean; placed: boolean; placeable: boolean;
+    distances: { member: string; d: number }[]; // free members only, tiles
+  }[];
+  members: { id: string; name: string; free: boolean; x: number; y: number }[];
+  inProgress: { piece: string; lead: string; helper: string | null; state: PieceState }[];
+}
+
+export interface AssignmentDecision { piece: string; lead: string; helper?: string }
+
+// "pending": the controller is still thinking - the crew waits (wanders) and
+// the built-in assigner does NOT run. "fallback": run the built-in assigner.
+export type ControllerReply = AssignmentDecision[] | "pending" | "fallback";
+export interface CrewController {
+  decide(view: DecisionView): ControllerReply;
+  applied?(a: AssignmentDecision): void; // called for each decision the engine accepted
+}
 
 export interface PuzzleLayout {
   riverX0: number;
@@ -181,6 +213,10 @@ export class BridgePuzzle {
   readonly layout: PuzzleLayout;
   private rng: () => number;
   private crossed = new Set<string>();
+  private controller: CrewController | null = null;
+
+  // Attach/detach an external decision-maker for crew job assignment.
+  setController(c: CrewController | null) { this.controller = c; }
 
   constructor(crew: CrewMember[], seed = 7) {
     this.seed = seed;
@@ -276,6 +312,75 @@ export class BridgePuzzle {
   private free(m: Member): boolean { return m.state === "idle" || m.state === "wandering"; }
 
   private member(id: string | null): Member | undefined { return this.members.find((m) => m.id === id); }
+
+  // What a controller is allowed to decide about, computed from live state.
+  decisionView(): DecisionView {
+    const standFrom = this.members[0]?.pos ?? { x: 1, y: this.layout.bridgeY };
+    const freeMembers = this.members.filter((m) => this.free(m));
+    return {
+      pieces: this.pieces.map((p) => ({
+        id: p.id, kind: p.kind, heavy: p.heavy, home: p.home, target: p.target,
+        claimed: p.state !== "idle", placed: p.state === "placed",
+        placeable: p.state === "idle" && !!this.standCell(p, standFrom),
+        distances: freeMembers.map((m) => ({ member: m.id, d: Math.round(dist(m.pos, p.pos) * 10) / 10 })),
+      })),
+      members: this.members.map((m) => ({ id: m.id, name: m.name, free: this.free(m), x: m.pos.x, y: m.pos.y })),
+      inProgress: this.pieces
+        .filter((p) => p.state !== "idle" && p.state !== "placed")
+        .map((p) => ({ piece: p.id, lead: p.lead ?? "", helper: p.helper, state: p.state })),
+    };
+  }
+
+  // Shared claim path for controller decisions: lead fetches, helper (beams)
+  // goes to help. Same resulting states as the built-in assigner.
+  private claim(p: Piece, lead: Member, helper?: Member) {
+    p.state = "claimed"; p.lead = lead.id;
+    lead.state = "fetching"; lead.piece = p.id;
+    lead.path = this.findPath(lead.pos, p.pos) ?? [];
+    this.say(lead, this.pick(p.heavy ? CHATTER.claimBeam : CHATTER.claimBlock));
+    if (helper) {
+      p.helper = helper.id;
+      helper.state = "helping"; helper.piece = p.id;
+      helper.path = this.findPath(helper.pos, p.pos) ?? [];
+      this.say(helper, this.pick(CHATTER.helpAccept));
+    }
+  }
+
+  // Validate one controller decision against live state and apply it. Anything
+  // that does not check out is rejected - the model can only choose among
+  // moves the built-in assigner could also have made.
+  private applyDecision(a: AssignmentDecision): boolean {
+    const p = this.pieces.find((q) => q.id === a.piece);
+    if (!p || p.state !== "idle") return false;
+    const standFrom = this.members[0]?.pos ?? { x: 1, y: this.layout.bridgeY };
+    if (!this.standCell(p, standFrom)) return false;
+    const lead = this.member(a.lead);
+    if (!lead || !this.free(lead)) return false;
+    if (p.heavy) {
+      const helper = a.helper ? this.member(a.helper) : undefined;
+      if (!helper || !this.free(helper) || helper.id === lead.id) return false;
+      this.claim(p, lead, helper);
+    } else {
+      if (a.helper) return false; // a block is a one-mii job
+      this.claim(p, lead);
+    }
+    return true;
+  }
+
+  private dispatch() {
+    if (!this.controller) { this.assign(); return; }
+    const view = this.decisionView();
+    // Nothing to decide: no placeable unclaimed piece, or nobody free.
+    if (!view.pieces.some((p) => p.placeable) || !view.members.some((m) => m.free)) return;
+    const out = this.controller.decide(view);
+    if (out === "pending") return; // thinking: crew wanders, no built-in claims
+    if (out === "fallback") { this.assign(); return; }
+    let applied = 0;
+    for (const a of out) if (this.applyDecision(a)) { applied++; this.controller.applied?.(a); }
+    // A plan with zero usable moves does not stall the game: built-in logic
+    // covers the tick (the controller reports this state honestly upstream).
+    if (applied === 0) this.assign();
+  }
 
   // Feasibility-driven assignment: only pieces whose stand cell is reachable
   // right now can be claimed, so the crew discovers the workable order from
@@ -378,7 +483,7 @@ export class BridgePuzzle {
     this.elapsed += dt * this.speed;
     for (const m of this.members) if (m.bubbleUntil < this.t) m.bubble = null;
 
-    if (this.status === "building") this.assign();
+    if (this.status === "building") this.dispatch();
 
     for (const m of this.members) {
       switch (m.state) {
