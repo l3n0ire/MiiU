@@ -534,7 +534,7 @@ function draw() {
     $("winBanner").style.display = "";
     const knowledge = found
       ? shared
-        ? `${found} found the hidden crack and shared it - ${s.stats.routeUpdates.length} route${s.stats.routeUpdates.length === 1 ? "" : "s"} automatically re-planned through it.`
+        ? `${found} found the hidden crack and shared it with the crew.${s.stats.routeUpdates.length ? ` ${s.stats.routeUpdates.length} route${s.stats.routeUpdates.length === 1 ? "" : "s"} automatically re-planned through it.` : " Everyone could slip through to the cache from then on."}`
         : `${found} found the hidden crack and kept it private - only ${found} could reach the cache.`
       : "Nobody found a hidden crack this run.";
     const cache = s.stats.cacheDeliveredBy ? ` ${s.stats.cacheDeliveredBy} brought home the golden cache crate!` : "";

@@ -1038,6 +1038,7 @@ export class Maze {
     const open = this.doorOpen();
     if (open !== this.wasOpen) {
       this.wasOpen = open;
+      if (this.status !== "running") return; // completion released the plates - no door commentary after the win
       this.say("Puzzle", open
         ? "Both plates are held - the stone door rumbles open."
         : "A plate was released - the stone door grinds shut.");
