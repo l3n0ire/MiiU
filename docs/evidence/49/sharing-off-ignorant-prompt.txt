@@ -1,0 +1,41 @@
+Actual outgoing prompt to the mock model for Juniper (sharing OFF), captured at 2026-11-03T04:19:38.465Z,
+AFTER Pip had privately found the hidden crack and was looting the golden cache crate.
+Under the pre-fix build this prompt's shared board said "<finder> is fetching cache-0."
+
+You are Juniper. The crew is bringing 4 supply crates out of the maze warrens on the east side back to the camp at (0,5) on the west side.
+
+The ONLY public way between the camp side and the warrens is a stone door at (10,9). It is heavy machinery: the door is OPEN only while BOTH of its pressure plates are stood on at the same time (2/2 held right now, door OPEN). A mii holding a plate keeps the door open but cannot do anything else; the moment either holder steps off, the door slams shut and anyone mid-trip waits on their side until it opens again. Carriers queue at the door cell (10,9) while it is shut.
+
+
+Sharing is OFF for this run. Do not choose "share"; discoveries stay private.
+Your position: (10.5,7.7). You are HOLDING plate-1 (keeping the door machinery alive - "release" to step off, or "wait" to keep holding).
+Other crew: Pip (free), Marlo (holding plate-0), Gus (carrying a crate).
+Delivered so far: 3/4.
+
+Pressure plates:
+- plate-0 at (9,8): HELD by c9ptss1t
+- plate-1 at (10,7): HELD by you
+
+Announced on the shared board:
+Gus is carrying crate-3.
+Marlo is holding plate-0.
+Juniper is holding plate-1.
+
+Crates:
+- crate-0: delivered
+- crate-1: delivered
+- crate-2: delivered
+- crate-3: being carried by Gus
+
+
+What happened to your recent choices:
+- done: went to hold plate-1
+
+Choose your own next move:
+
+
+- "release" to step off plate-1 (the door will shut if the other plate is not held).
+- "scout" to walk the camp-side walls and look closely for a hidden crack.
+
+- "wait" if nothing makes sense for you right now (keep holding).
+Use crate and plate ids exactly as listed (e.g. crate-0, plate-0). reason: one short sentence in your own voice.

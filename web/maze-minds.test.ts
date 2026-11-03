@@ -189,3 +189,37 @@ test("per-mii fallback: one unreachable model falls back, the rest keep deciding
   assert.ok(juniper.detail.includes("built-in"));
   assert.ok(statuses.filter((s) => s.state === "fallback").length === 1, "only Juniper fell back");
 });
+
+test("sharing OFF: cache activity never reaches an ignorant mii's actual prompt", async () => {
+  const clock = { t: 10_000 };
+  const p = new Maze(CREW, crackedSeed());
+  p.setSharing(false);
+  const caller = mindCaller(() => ({ action: "wait", crate: "", plate: "", reason: "waiting" }));
+  const minds = new MazeMinds(caller, { now: () => clock.t });
+  p.setController(minds);
+  p.tick(0.5);
+  await flush();
+  assert.equal(caller.prompts.length, 4, "everyone got an opening prompt");
+  const a = p.members[0];
+  // private discovery + private cache fetch, driven through the engine directly
+  let found = false;
+  for (let trip = 0; trip < 10 && !found; trip++) {
+    p.applyDecision(a.id, { action: "scout", reason: "" });
+    let t = 0;
+    while (t < 90 && a.state === "scouting") { p.tick(0.05); t += 0.05; }
+    found = p.decisionViewFor(a.id).iFoundUnshared !== null;
+  }
+  assert.ok(found, "crack found privately");
+  assert.ok(p.applyDecision(a.id, { action: "fetch", crate: "cache-0", reason: "" }).ok, "private cache fetch starts");
+  // public activity too, so ignorant miis DO get re-prompted with a fresh board
+  assert.ok(p.applyDecision(p.members[1].id, { action: "hold", plate: "plate-0", reason: "" }).ok);
+  caller.prompts.length = 0; // watch only prompts issued after the cache fetch began
+  for (let i = 0; i < 8; i++) { clock.t += 60_000; p.tick(0.5); await flush(); }
+  const ignorant = caller.prompts.filter((q) => q.me === "Juniper" || q.me === "Gus");
+  assert.ok(ignorant.length > 0, "ignorant miis were re-prompted after the private fetch began");
+  for (const q of ignorant) {
+    assert.ok(!/cache/i.test(q.prompt), `${q.me} saw cache activity on the shared board`);
+    assert.ok(!/golden/i.test(q.prompt), `${q.me} saw the golden crate`);
+    assert.ok(q.prompt.includes("Marlo"), "public board activity still reaches ignorant miis");
+  }
+});

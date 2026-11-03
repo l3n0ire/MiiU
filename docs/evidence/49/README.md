@@ -1,7 +1,12 @@
 # Issue #49 — The Stone Maze (co-op maze puzzle) — evidence
 
 Captured with headless Chrome against a local static build (`dist/`), per
-`.claude/skills/miiu-testing/SKILL.md`.
+`.claude/skills/miiu-testing/SKILL.md`. All model-driven runs use the
+**scripted mock model server** (deterministic, no LLM) named
+`scripted-mock-no-llm`, so the pixels label themselves: the driver line reads
+`scripted-mock-no-llm (Ollama)` and every mii carries a `[mock]` tag (the UI
+swaps `[model]` for `[mock]` whenever the connected model name contains
+"mock").
 
 ## Files
 
@@ -9,20 +14,29 @@ Captured with headless Chrome against a local static build (`dist/`), per
   two pressure plates, the stone door (closed), supply crates scattered in the
   warrens east of the door. Dotted lines are current routes.
 - `builtin-run.mp4` / `builtin-start.png` / `builtin-win.png` — full run with
-  **no model connected** (built-in logic): two miis walk to the plates and hold,
-  the door rumbles open, the other two fetch all 4 crates, run completes.
-  Built-in logic never scouts, so the hidden crack stays unfound ("Nobody found
-  a hidden crack this run").
-- `mock-model-run.mp4` / `mock-model-win.png` — full run against the **scripted
-  mock model server** (not a real model; deterministic choices). The mock is
-  labeled in the pixels themselves: the driver line reads
-  `scripted-mock-no-llm (Ollama)` and every mii carries a `[mock]` tag (the UI
-  swaps `[model]` for `[mock]` whenever the connected model name contains
-  "mock"). Shows the cooperative arc the engine supports:
-  Pip scouts → discovers the hidden crack at (8,2) privately → shares it with
-  the crew → two holders keep the door open → Pip slips through the crack and
-  brings home the golden cache crate; all 4 supply crates delivered in 43 model
-  calls (each "one choice" — no hidden budget takeover).
+  **no model connected** (built-in logic): two miis hold the plates, the door
+  opens, the other two fetch all 4 crates. Built-in logic never scouts, so the
+  hidden crack stays unfound ("Nobody found a hidden crack this run").
+- `mock-model-run.mp4` / `mock-model-win.png` — mock-model run, sharing ON:
+  Pip scouts → discovers the crack privately → shares → two holders keep the
+  door open → Pip brings home the golden cache crate; 4/4 crates in 43
+  one-choice calls.
+- `mock-off-run.mp4` / `mock-off-win.png` — mock-model run, sharing OFF:
+  Pip discovers the crack, keeps it private (the engine rejects sharing), and
+  privately loots the golden cache through the crack while the crew finishes
+  4/4 through the held door; 42 one-choice calls.
+- `sharing-off-ignorant-prompt.txt` — an actual outgoing prompt (Juniper,
+  sharing OFF) captured by the mock server AFTER Pip had privately found the
+  crack and was looting the cache. Its shared board shows only public
+  activity; nothing about the cache, the crack, or its finder reaches
+  non-knowers. Across the whole OFF run, all 28 prompts sent to ignorant
+  miis after the private discovery were checked for `cache-0`, any golden
+  crate mention, any found/shared crack statement, the actual crack
+  coordinates (8,2), cache fetch/carrier lines, and cache-room coordinates:
+  zero occurrences. (The pre-review build leaked `"... is fetching cache-0."`
+  here — fixed in `maze-engine.ts` `announcements()`, which is now
+  per-member; regression-tested in `web/maze-engine.test.ts` and
+  `web/maze-minds.test.ts`.)
 
 ## Notes
 
@@ -31,4 +45,4 @@ Captured with headless Chrome against a local static build (`dist/`), per
   real-model (OpenAI/Ollama) evidence pass is a separate step.
 - Layout solvability is checked at generation time (plates/spawns reachable
   with the door shut; crates only reachable through the open door; cache room
-  sealed except for its crack), and unit-tested in `web/maze-engine.test.mjs`.
+  sealed except for its crack), and unit-tested in `web/maze-engine.test.ts`.

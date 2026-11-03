@@ -626,11 +626,16 @@ export class Maze {
     return this.scoutTargets(m).length > 0;
   }
 
-  // What the shared board shows every mii: public claims, holds and shares.
-  // Private discoveries are NOT on the board until shared.
-  private announcements(): string[] {
+  // What the shared board shows a given mii: public claims, holds and shares.
+  // Private discoveries are NOT on the board until shared - and that includes
+  // cache ACTIVITY: a line like "Pip is fetching cache-0" would tell every
+  // reader that a cache exists and who found it, so golden-crate lines only
+  // appear on the boards of miis who already know the crack.
+  private announcements(forMemberId: string): string[] {
+    const iKnow = this.knowsCrack(forMemberId);
     const out: string[] = [];
     for (const c of this.crates) {
+      if (c.golden && !iKnow) continue;
       if (c.claimedBy && !c.delivered) {
         const m = this.member(c.claimedBy);
         if (m) out.push(`${m.name} is ${m.state === "carrying" ? "carrying" : "fetching"} ${c.id}.`);
@@ -713,7 +718,7 @@ export class Maze {
         ? { x: this.layout.crack.ax, y: this.layout.crack.ay } : null,
       canScout: this.canScout(memberId),
       sharingAllowed: this.sharingAllowed,
-      announcements: this.announcements(),
+      announcements: this.announcements(memberId),
     };
   }
 

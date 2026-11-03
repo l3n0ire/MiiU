@@ -311,6 +311,8 @@ function reset(newSeed: boolean, maxCalls?: number) {
   if (maxCalls !== undefined) { mazeOptions = { ...mazeOptions, maxCalls }; saveMazeOptions(); }
   if (newSeed) seed = Math.floor(Math.random() * 100000);
   puzzle = new Maze(loadCrew(), seed);
+  // a fresh engine starts at speed 1 - re-apply the slider so they never drift
+  puzzle.speed = Math.max(0.25, Math.min(4, Number(($("speedRange") as HTMLInputElement).value) || 1));
   puzzle.setSharing(mazeOptions.sharing);
   if (minds) { minds.newPuzzle(mazeOptions.maxCalls); puzzle.setController(minds); }
   confetti = [];

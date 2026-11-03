@@ -270,3 +270,38 @@ test("budget failure: the run fails at the budget wall and freezes", () => {
   // late decisions are refused
   assert.equal(p.applyDecision(p.members[0].id, { action: "wait", reason: "" }).ok, false);
 });
+
+test("shared board: cache activity is visible only to crack-knowers until a share", () => {
+  const seed = seedWithCrack();
+  const scoutOut = (p: Maze, id: string) => {
+    const m = p.members.find((x) => x.id === id)!;
+    let found = false;
+    for (let trip = 0; trip < 10 && !found; trip++) {
+      p.applyDecision(id, { action: "scout", reason: "" });
+      let t = 0;
+      while (t < 90 && m.state === "scouting") { p.tick(0.05); t += 0.05; }
+      found = p.decisionViewFor(id).iFoundUnshared !== null;
+    }
+    assert.ok(found, "scouting found the crack");
+  };
+  // private run: the discoverer fetches the cache WITHOUT sharing
+  const p = new Maze(CREW, seed);
+  p.setController(WAITER);
+  scoutOut(p, "a");
+  assert.ok(p.applyDecision("b", { action: "hold", plate: "plate-0", reason: "" }).ok);
+  assert.ok(p.applyDecision("a", { action: "fetch", crate: "cache-0", reason: "" }).ok);
+  const boardB = p.decisionViewFor("b").announcements.join("\n");
+  assert.ok(boardB.includes("Marlo is heading to plate-0"), "public activity still on the board");
+  assert.ok(!/cache/i.test(boardB), "non-knower board must not mention the cache or its finder");
+  assert.ok(!/cache/i.test(p.decisionViewFor("c").announcements.join("\n")), "no cache leak to any non-knower");
+  assert.ok(p.decisionViewFor("a").announcements.join("\n").includes("Pip is fetching cache-0"),
+    "the discoverer still sees their own cache line");
+  // shared run: after a share, cache activity is legitimately public
+  const p2 = new Maze(CREW, seed);
+  p2.setController(WAITER);
+  scoutOut(p2, "a");
+  assert.ok(p2.applyDecision("a", { action: "share", reason: "" }).ok);
+  assert.ok(p2.applyDecision("a", { action: "fetch", crate: "cache-0", reason: "" }).ok);
+  assert.ok(p2.decisionViewFor("b").announcements.join("\n").includes("cache-0"),
+    "after a share the cache line is public");
+});
