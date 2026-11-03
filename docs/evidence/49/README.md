@@ -14,8 +14,11 @@ Captured with headless Chrome against a local static build (`dist/`), per
   Built-in logic never scouts, so the hidden crack stays unfound ("Nobody found
   a hidden crack this run").
 - `mock-model-run.mp4` / `mock-model-win.png` — full run against the **scripted
-  mock model server** (not a real model; deterministic choices). Shows the model
-  driver per mii, and the cooperative arc the engine supports:
+  mock model server** (not a real model; deterministic choices). The mock is
+  labeled in the pixels themselves: the driver line reads
+  `scripted-mock-no-llm (Ollama)` and every mii carries a `[mock]` tag (the UI
+  swaps `[model]` for `[mock]` whenever the connected model name contains
+  "mock"). Shows the cooperative arc the engine supports:
   Pip scouts → discovers the hidden crack at (8,2) privately → shares it with
   the crew → two holders keep the door open → Pip slips through the crack and
   brings home the golden cache crate; all 4 supply crates delivered in 43 model

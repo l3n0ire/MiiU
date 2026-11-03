@@ -136,8 +136,9 @@ function renderCrewPanel() {
     ? "Built-in logic - model unavailable for every mii"
     : `Each mii decides for itself with ${minds.modelLabel}`;
   driver.textContent += mazeOptions.sharing ? " - sharing ON" : " - sharing OFF";
+  const mockDriver = /mock/i.test(minds.modelLabel);
   const lines = statuses.map((s) => {
-    const tag = s.state === "fallback" ? "[built-in]" : s.state === "thinking" ? "[thinking]" : "[model]";
+    const tag = s.state === "fallback" ? "[built-in]" : s.state === "thinking" ? "[thinking]" : mockDriver ? "[mock]" : "[model]";
     return `${tag} ${s.name}: ${s.detail}`;
   });
   if (stats.calls > 0) lines.push(`${stats.calls}/${stats.maxCalls} model calls (one choice each), ${stats.decisionsApplied} move${stats.decisionsApplied === 1 ? "" : "s"} started this puzzle`);
