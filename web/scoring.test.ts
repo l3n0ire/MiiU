@@ -120,6 +120,9 @@ test("sub-second new best is visible, not hidden by rounding (UI bug report)", (
   const prev = run({ elapsed: 155.0 });
   assert.match(bannerLine(run({ elapsed: 154.5 }), [prev]), /New best on this layout: 154.5s/);
   assert.match(bannerLine(prev, [prev, run({ elapsed: 154.5 })]), /#2 of 2 runs on this layout/);
+  // sub-tenth improvements collide at one decimal (154.41 vs 154.44 both
+  // "154.4s"): the banner raises precision until the new best is distinct
+  assert.match(bannerLine(run({ elapsed: 154.41 }), [run({ elapsed: 154.44 })]), /New best on this layout: 154.41s/);
 });
 
 test("playback speed leaves completion time within tick quantization (integration, built-in maze run)", async () => {
