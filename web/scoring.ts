@@ -12,6 +12,14 @@
 // "complete". Mode-specific rules (e.g. the Stone Maze may finish with a
 // captive left behind, per #52) stay in the engines - scoring adds no
 // extra requirements or penalties.
+//
+// Speed caveat: elapsed is NOT exactly speed-invariant. Engines accumulate
+// it in per-tick chunks of dt*speed and dispatch rounds (every 0.4s island
+// time) discard sub-round overshoot, so the same layout at different
+// playback speeds can drift by ~1s raw (observed 154.5s @1x vs 155.0s @4x).
+// Cross-speed comparisons are only meaningful to about +/-1s. Exact
+// invariance needs a fixed-step simulation core in the engines - a
+// follow-up engine change, not a scoring-module fix.
 
 export type PuzzleMode = "puzzle" | "crossing" | "expedition" | "maze";
 
