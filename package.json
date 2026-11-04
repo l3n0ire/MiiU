@@ -7,7 +7,7 @@
     "dev": "tsx watch --env-file-if-exists=.env server/index.ts",
     "build:web": "esbuild web/app.ts --bundle --format=iife --target=es2022 --outfile=dist/bundle.js && esbuild web/puzzle.ts --bundle --format=iife --target=es2022 --outfile=dist/puzzle-bundle.js && esbuild web/crossing.ts --bundle --format=iife --target=es2022 --outfile=dist/crossing-bundle.js && esbuild web/expedition.ts --bundle --format=iife --target=es2022 --outfile=dist/expedition-bundle.js && esbuild web/maze.ts --bundle --format=iife --target=es2022 --outfile=dist/maze-bundle.js && cp web/landing.html dist/index.html && cp web/index.html dist/playground.html && cp web/puzzle.html dist/puzzle.html && cp web/crossing.html dist/crossing.html && cp web/expedition.html dist/expedition.html && cp web/maze.html dist/maze.html && cp public/app.js dist/app.js",
     "start:web": "npm run build:web && npx serve dist",
-    "test": "tsx --test web/setup-label.test.ts server/llm-activity.test.ts server/game.test.ts web/puzzle-engine.test.ts web/puzzle-minds.test.ts web/crossing-engine.test.ts web/crossing-minds.test.ts web/expedition-engine.test.ts web/expedition-minds.test.ts web/maze-engine.test.ts web/maze-minds.test.ts"
+    "test": "tsx --test web/setup-label.test.ts server/llm-activity.test.ts server/game.test.ts web/puzzle-engine.test.ts web/puzzle-minds.test.ts web/crossing-engine.test.ts web/crossing-minds.test.ts web/expedition-engine.test.ts web/expedition-minds.test.ts web/maze-engine.test.ts web/maze-minds.test.ts web/scoring.test.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"
