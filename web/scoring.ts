@@ -27,8 +27,11 @@ export const FORMULA_VERSION = "island-seconds-v1";
 
 export interface RunRecord {
   mode: PuzzleMode;
-  // Layout seed for modes that generate one (expedition, maze); null for
-  // fixed-layout modes (puzzle, crossing).
+  // Layout seed from the engine's state(). All four current modes generate
+  // seeded layouts (puzzle.ts and crossing.ts re-randomize on "New puzzle"),
+  // so call sites must pass the actual seed. null means the engine did not
+  // report one: unknown-seed runs compare within the mode only, never as
+  // same-layout.
   seed: number | null;
   driver: RunDriver;
   // Model name when a model was connected (e.g. "qwen2.5:0.5b"), else null.
@@ -59,7 +62,8 @@ export function scoreOf(run: RunRecord): number {
   return run.elapsed;
 }
 
-// Like-for-like comparison: same mode, and same layout where seeds exist.
+// Like-for-like comparison: same mode, and same layout seed. A null seed
+// means the layout is unknown, so such runs compare within the mode only.
 export function comparable(a: RunRecord, b: RunRecord): boolean {
   return a.mode === b.mode && a.seed === b.seed;
 }
@@ -122,12 +126,28 @@ export function formatScore(run: RunRecord): string {
   return `${Math.round(run.elapsed)}s`;
 }
 
+// Display labels for banner copy; raw mode ids are internal.
+const MODE_LABELS: Record<string, string> = {
+  maze: "the Stone Maze",
+  expedition: "the Hidden Pass",
+  puzzle: "the Bridge Puzzle",
+  crossing: "the Long Crossing",
+};
+export function modeLabel(mode: string): string {
+  return MODE_LABELS[mode] ?? mode;
+}
+
 // One-line summary for win banners: score plus context when a best exists.
+// "New best" only when strictly faster than every comparable run - a run
+// that ties the best is rank #1 but NOT a new best (times are equal scores).
 export function bannerLine(run: RunRecord, runs: RunRecord[]): string {
   const rank = rankOf(run, runs);
   const pool = runs.filter((r) => comparable(r, run));
-  const scope = run.seed != null ? "on this layout" : `in ${run.mode}`;
-  if (rank === 1 && pool.length > 1) return `New best ${scope}: ${formatScore(run)}`;
+  const scope = run.seed != null ? "on this layout" : `in ${modeLabel(run.mode)}`;
+  const others = pool.filter((r) => r !== run);
+  if (others.length > 0 && others.every((r) => compareRuns(r, run) > 0)) {
+    return `New best ${scope}: ${formatScore(run)}`;
+  }
   if (pool.length > 1) return `${formatScore(run)} - #${rank} of ${pool.length} runs ${scope}`;
   return `Finished in ${formatScore(run)} of island time`;
 }
