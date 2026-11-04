@@ -140,12 +140,14 @@ export function formatScore(run: RunRecord): string {
 }
 
 // Smallest precision (1-3 decimals) at which two raw scores display
-// differently. Distinct raw scores can still collide at one decimal
-// (154.41 vs 154.44); banners use this so a genuine new best never
-// displays the same string as the best it beat.
-function distinctPrecision(a: number, b: number): number {
+// differently, or null when they still collide at 3 decimals. Distinct raw
+// scores can collide at one decimal (154.41 vs 154.44); banners use this
+// so a genuine new best never displays the same number as the best it
+// beat. The cap is 3 decimals; raw scores closer than that fall back to a
+// non-numeric label rather than showing a misleading equal number.
+function distinctPrecision(a: number, b: number): number | null {
   for (const p of [1, 2, 3]) if (a.toFixed(p) !== b.toFixed(p)) return p;
-  return 3;
+  return null;
 }
 
 // Display labels for banner copy; raw mode ids are internal.
@@ -170,7 +172,9 @@ export function bannerLine(run: RunRecord, runs: RunRecord[]): string {
   if (others.length > 0 && others.every((r) => compareRuns(r, run) > 0)) {
     const prevBest = others.reduce((m, r) => (compareRuns(r, m) < 0 ? r : m));
     const p = distinctPrecision(run.elapsed, prevBest.elapsed);
-    return `New best ${scope}: ${run.elapsed.toFixed(p)}s`;
+    return p == null
+      ? `New best ${scope} (improvement below displayed precision)`
+      : `New best ${scope}: ${run.elapsed.toFixed(p)}s`;
   }
   if (pool.length > 1) return `${formatScore(run)} - #${rank} of ${pool.length} runs ${scope}`;
   return `Finished in ${formatScore(run)} of island time`;
