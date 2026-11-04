@@ -47,8 +47,12 @@ test("comparability is same mode and same layout seed", () => {
   assert.ok(comparable(base, run({ elapsed: 999 })));
   assert.ok(!comparable(base, run({ seed: 8 })));
   assert.ok(!comparable(base, run({ mode: "expedition" })));
-  // fixed-layout modes (null seed) compare within the mode
+  // unknown-seed runs (null = engine did not report one) compare within the mode only
   assert.ok(comparable(run({ mode: "puzzle", seed: null }), run({ mode: "puzzle", seed: null })));
+  // every current mode generates seeded layouts: different seeds never compare,
+  // even in puzzle/crossing (they re-randomize on "New puzzle")
+  assert.ok(!comparable(run({ mode: "puzzle", seed: 1 }), run({ mode: "puzzle", seed: 2 })));
+  assert.ok(comparable(run({ mode: "puzzle", seed: 1 }), run({ mode: "puzzle", seed: 1 })));
 });
 
 test("bestRun picks the fastest comparable run only", () => {
@@ -95,7 +99,13 @@ test("bannerLine announces new best, ranked finish, and first finish", () => {
   assert.match(bannerLine(first, [first]), /Finished in 155s/);
   const runs = [run({ elapsed: 200 }), run({ elapsed: 120 })];
   assert.match(bannerLine(run({ elapsed: 155 }), [...runs, run({ elapsed: 155 })]), /#2 of 3 runs on this layout/);
-  assert.match(bannerLine(run({ elapsed: 100 }), [...runs, run({ elapsed: 100 })]), /New best on this layout: 100s/);
+  // strictly faster than all others: a new best
+  assert.match(bannerLine(run({ elapsed: 100 }), runs), /New best on this layout: 100s/);
+  // tying the best is rank #1 but NOT a new best (equal times are equal scores)
+  assert.match(bannerLine(run({ elapsed: 120 }), [...runs]), /#1 of 2 runs on this layout/);
+  // null-seed scope uses the mode's display label, not the raw id
+  const p60 = run({ mode: "puzzle", seed: null, elapsed: 60 });
+  assert.match(bannerLine(p60, [p60, run({ mode: "puzzle", seed: null, elapsed: 90 })]), /New best in the Bridge Puzzle: 60s/);
 });
 
 test("formatScore rounds island seconds", () => {
