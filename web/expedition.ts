@@ -497,7 +497,7 @@ function draw() {
       : "Nobody found the hidden pass - the crew took the long way.";
     $("winStats").textContent = `Done in ${Math.round(s.elapsed)}s of island time - ${s.delivered}/${s.total} crates${minds ? `, ${minds.stats().calls} model calls` : ""} (sharing ${s.sharingAllowed ? "on" : "off"}). ${knowledge}`;
     const { line: scoreText } = recordCompletion(localStorage, { mode: "expedition", seed: s.seed, minds, sharing: s.sharingAllowed, elapsed: s.elapsed, speed: puzzle.speed });
-    $("scoreLine").textContent = scoreText;
+    if (scoreText) $("scoreLine").textContent = scoreText;
     renderHistory(localStorage, "expedition", $("historyList"));
     // Same-layout comparison with the previous completed run on this page.
     // Descriptive, not a controlled experiment - model choices are stochastic.

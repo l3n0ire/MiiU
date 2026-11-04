@@ -47,10 +47,13 @@ export interface CompletionInput {
 // once per run, at the engine's "complete" transition. The banner line is
 // computed against history INCLUDING this run (rank and "of N" counts are
 // about where this run lands), then the run is persisted.
+// line is null when the module's plain "Finished in Xs" text would only
+// repeat the completion time the page's win stats already show - the page
+// then leaves its score line empty instead of duplicating.
 export function recordCompletion(
   storage: ScoreStorage,
   input: CompletionInput,
-): { run: RunRecord; line: string } {
+): { run: RunRecord; line: string | null } {
   const run: RunRecord = {
     mode: input.mode,
     seed: input.seed,
@@ -62,8 +65,9 @@ export function recordCompletion(
     speed: input.speed,
     at: new Date().toISOString(),
   };
-  const line = bannerLine(run, [...loadHistory(storage), run]);
+  const raw = bannerLine(run, [...loadHistory(storage), run]);
   recordRun(storage, run);
+  const line = raw === `Finished in ${formatScore(run)} of island time` ? null : raw;
   return { run, line };
 }
 
@@ -84,7 +88,9 @@ export function renderHistory(storage: ScoreStorage, mode: PuzzleMode, el: HTMLE
     const row = el.ownerDocument.createElement("div");
     const layout = r.seed != null ? `layout #${r.seed}` : "unknown layout";
     const date = new Date(r.at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    row.textContent = `#${i + 1} ${formatScore(r)} - ${layout} - ${r.driver}${r.model ? ` ${r.model}` : ""} - ${date}`;
+    // Playback speed is metadata, not part of the score - shown because
+    // model-latency effects can make cross-speed runs differ.
+    row.textContent = `#${i + 1} ${formatScore(r)} - ${layout} - ${r.driver}${r.model ? ` ${r.model}` : ""} - ${r.speed}x - ${date}`;
     el.appendChild(row);
   });
 }

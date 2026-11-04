@@ -544,7 +544,7 @@ function draw() {
     const cache = s.stats.cacheDeliveredBy ? ` ${s.stats.cacheDeliveredBy} brought home the golden cache crate!` : "";
     $("winStats").textContent = `Done in ${Math.round(s.elapsed)}s of island time - ${s.delivered}/${s.total} crates${minds ? `, ${minds.stats().calls} model calls` : ""} (sharing ${s.sharingAllowed ? "on" : "off"}). ${knowledge}${cache}`;
     const { line: scoreText } = recordCompletion(localStorage, { mode: "maze", seed: s.seed, minds, sharing: s.sharingAllowed, elapsed: s.elapsed, speed: puzzle.speed });
-    $("scoreLine").textContent = scoreText;
+    if (scoreText) $("scoreLine").textContent = scoreText;
     renderHistory(localStorage, "maze", $("historyList"));
     // Same-layout comparison with the previous completed run on this page.
     // Descriptive, not a controlled experiment - model choices are stochastic.

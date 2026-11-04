@@ -510,7 +510,7 @@ function draw() {
     $("winBanner").style.display = "";
     $("winStats").textContent = `Built in ${Math.round(s.elapsed)}s of island time - ${s.totalPieces} pieces placed across two rivers, ${s.assists} team lift${s.assists === 1 ? "" : "s"}.`;
     const { line: scoreText } = recordCompletion(localStorage, { mode: "crossing", seed: s.seed, minds, sharing: null, elapsed: s.elapsed, speed: puzzle.speed });
-    $("scoreLine").textContent = scoreText;
+    if (scoreText) $("scoreLine").textContent = scoreText;
     renderHistory(localStorage, "crossing", $("historyList"));
   }
   confetti = confetti.filter((c) => c.t < 2.5);

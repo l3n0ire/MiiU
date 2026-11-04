@@ -498,7 +498,7 @@ function draw() {
     $("winBanner").style.display = "";
     $("winStats").textContent = `Built in ${Math.round(s.elapsed)}s of island time - ${s.totalPieces} pieces placed, ${s.assists} team lift${s.assists === 1 ? "" : "s"}.`;
     const { line: scoreText } = recordCompletion(localStorage, { mode: "puzzle", seed: s.seed, minds, sharing: null, elapsed: s.elapsed, speed: puzzle.speed });
-    $("scoreLine").textContent = scoreText;
+    if (scoreText) $("scoreLine").textContent = scoreText;
     renderHistory(localStorage, "puzzle", $("historyList"));
   }
   confetti = confetti.filter((c) => c.t < 2.5);
