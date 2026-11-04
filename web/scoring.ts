@@ -15,11 +15,13 @@
 //
 // Speed caveat: elapsed is NOT exactly speed-invariant. Engines accumulate
 // it in per-tick chunks of dt*speed and dispatch rounds (every 0.4s island
-// time) discard sub-round overshoot, so the same layout at different
-// playback speeds can drift by ~1s raw (observed 154.5s @1x vs 155.0s @4x).
-// Cross-speed comparisons are only meaningful to about +/-1s. Exact
-// invariance needs a fixed-step simulation core in the engines - a
-// follow-up engine change, not a scoring-module fix.
+// time) discard sub-round overshoot, so raw completion time drifts with
+// playback speed. Measured case (built-in maze, seed 7): 154.5s at 1x vs
+// 155.0s at 4x (0.5s). That is one measurement, not a proved bound -
+// higher speeds, longer runs or different frame pacing can drift more, so
+// treat cross-speed comparisons as approximate. Exact invariance needs a
+// fixed-step simulation core in the engines - a follow-up engine change,
+// not a scoring-module fix.
 
 export type PuzzleMode = "puzzle" | "crossing" | "expedition" | "maze";
 
@@ -130,8 +132,11 @@ export function recordRun(storage: ScoreStorage, run: RunRecord): ScoredRun {
   return { ...run, score: scoreOf(run) };
 }
 
+// One decimal always: whole-second display hides genuine sub-second
+// improvements (154.5 vs 155.0 both showed "155s", making a real new best
+// look like a tie). Display precision only - the raw score is untouched.
 export function formatScore(run: RunRecord): string {
-  return `${Math.round(run.elapsed)}s`;
+  return `${run.elapsed.toFixed(1)}s`;
 }
 
 // Display labels for banner copy; raw mode ids are internal.
