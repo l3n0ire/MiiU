@@ -554,7 +554,7 @@ function draw() {
     } else {
       prev.textContent = "";
     }
-    lastRun = { sharing: s.sharingAllowed, calls: minds ? minds.stats().calls : null, elapsed: s.elapsed, seed: s.seed, found, shared, cache: s.stats.cacheDeliveredBy };
+    lastRun = { sharing: s.sharingAllowed, calls: minds ? minds.stats().calls : 0, elapsed: s.elapsed, seed: s.seed, found, shared, cache: s.stats.cacheDeliveredBy };
   }
   // failure banner
   if (s.status === "failed" && !failedShown) {

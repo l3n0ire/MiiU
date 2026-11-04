@@ -91,21 +91,52 @@ test("recordCompletion: persists under the scoring module's history key", () => 
   assert.ok(s.data.has(HISTORY_KEY));
 });
 
+function fakeElCollect(): { el: HTMLElement; rows: { text: string; bold: boolean }[] } {
+  const rows: { text: string; bold: boolean }[] = [];
+  const el = {
+    ownerDocument: {
+      createElement: () => ({ textContent: "", style: {}, set textContent2(v: string) {} }),
+    },
+    set textContent(_v: string) {},
+    appendChild(row: { textContent: string; style: { fontWeight?: string } }) {
+      rows.push({ text: row.textContent, bold: row.style.fontWeight === "600" });
+    },
+  };
+  return { el: el as unknown as HTMLElement, rows };
+}
+
 test("renderHistory: rows show rank, score, layout, driver, playback speed and date", () => {
   const s = memStorage();
   recordCompletion(s, { ...base, minds: fakeMinds(9, ["active"]), speed: 4, elapsed: 120 });
   recordCompletion(s, { ...base, minds: null, speed: 1, elapsed: 100 });
-  const rows: string[] = [];
-  const fakeDoc = { createElement: () => ({ textContent: "" }) };
-  const fakeEl = {
-    ownerDocument: fakeDoc,
-    set textContent(_v: string) {},
-    appendChild(row: { textContent: string }) { rows.push(row.textContent); },
-  };
-  renderHistory(s, "maze", fakeEl as unknown as HTMLElement);
+  const { el, rows } = fakeElCollect();
+  renderHistory(s, "maze", el);
   assert.equal(rows.length, 2);
-  assert.match(rows[0], /^#1 100.0s - layout #7 - builtin - 1x - /);
-  assert.match(rows[1], /^#2 120.0s - layout #7 - model qwen \(Ollama\) - 4x - /);
+  assert.match(rows[0].text, /^#1 100.0s - layout #7 - builtin - 1x - /);
+  assert.match(rows[1].text, /^#2 120.0s - layout #7 - model qwen \(Ollama\) - 4x - /);
+});
+
+test("renderHistory: different layouts rank separately, never together", () => {
+  const s = memStorage();
+  recordCompletion(s, { ...base, seed: 7, elapsed: 100, minds: null });
+  recordCompletion(s, { ...base, seed: 42, elapsed: 90, minds: null });
+  recordCompletion(s, { ...base, seed: 7, elapsed: 110, minds: null });
+  const { el, rows } = fakeElCollect();
+  renderHistory(s, "maze", el);
+  // layout #42 has the faster best so it leads; ranks restart per layout
+  const texts = rows.map((r) => r.text);
+  assert.equal(texts[0], "Layout #42:");
+  assert.match(texts[1], /^#1 90.0s - layout #42 /);
+  assert.equal(texts[2], "Layout #7:");
+  assert.match(texts[3], /^#1 100.0s - layout #7 /);
+  assert.match(texts[4], /^#2 110.0s - layout #7 /);
+});
+
+test("recordCompletion: visible improvement keeps the plain new-best line", () => {
+  const s = memStorage();
+  recordCompletion(s, { ...base, elapsed: 100.5, minds: null });
+  const { line } = recordCompletion(s, { ...base, elapsed: 100.0, minds: null });
+  assert.equal(line, "New best on this layout: 100.0s");
 });
 
 test("renderHistory: empty history shows the empty state", () => {

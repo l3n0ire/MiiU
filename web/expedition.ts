@@ -507,7 +507,7 @@ function draw() {
     } else {
       prev.textContent = "";
     }
-    lastRun = { sharing: s.sharingAllowed, calls: minds ? minds.stats().calls : null, elapsed: s.elapsed, seed: s.seed, found, shared };
+    lastRun = { sharing: s.sharingAllowed, calls: minds ? minds.stats().calls : 0, elapsed: s.elapsed, seed: s.seed, found, shared };
   }
   // failure banner
   if (s.status === "failed" && !failedShown) {

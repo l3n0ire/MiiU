@@ -8,8 +8,10 @@ import {
   recordRun,
   loadHistory,
   bannerLine,
+
   formatScore,
   compareRuns,
+  comparable,
   type RunRecord,
   type RunDriver,
   type PuzzleMode,
@@ -65,32 +67,57 @@ export function recordCompletion(
     speed: input.speed,
     at: new Date().toISOString(),
   };
-  const raw = bannerLine(run, [...loadHistory(storage), run]);
+  const history = loadHistory(storage);
+  let raw = bannerLine(run, [...history, run]);
   recordRun(storage, run);
   const line = raw === `Finished in ${formatScore(run)} of island time` ? null : raw;
   return { run, line };
 }
 
-// Render the per-mode run history panel: up to 10 fastest completed runs
-// in this mode (any layout), newest information first per row. Uses DOM
+// Render the per-mode run history panel. Runs only rank like-for-like
+// (same mode AND same layout seed, per the module's comparable()), so the
+// panel groups by layout: layouts are ordered by their fastest run and
+// ranks restart inside each layout group. Up to 10 rows total. Uses DOM
 // nodes with textContent so stored model labels render literally.
 export function renderHistory(storage: ScoreStorage, mode: PuzzleMode, el: HTMLElement): void {
-  const runs = loadHistory(storage)
-    .filter((r) => r.mode === mode)
-    .sort(compareRuns)
-    .slice(0, 10);
+  const runs = loadHistory(storage).filter((r) => r.mode === mode);
   el.textContent = "";
   if (!runs.length) {
     el.textContent = "No completed runs yet.";
     return;
   }
-  runs.forEach((r, i) => {
-    const row = el.ownerDocument.createElement("div");
-    const layout = r.seed != null ? `layout #${r.seed}` : "unknown layout";
-    const date = new Date(r.at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    // Playback speed is metadata, not part of the score - shown because
-    // model-latency effects can make cross-speed runs differ.
-    row.textContent = `#${i + 1} ${formatScore(r)} - ${layout} - ${r.driver}${r.model ? ` ${r.model}` : ""} - ${r.speed}x - ${date}`;
-    el.appendChild(row);
-  });
+  const groups = new Map<string, RunRecord[]>();
+  for (const r of runs) {
+    const key = r.seed != null ? `#${r.seed}` : "unknown";
+    const list = groups.get(key) ?? [];
+    list.push(r);
+    groups.set(key, list);
+  }
+  const ordered = [...groups.entries()]
+    .map(([key, list]) => ({ key, list: list.sort(compareRuns) }))
+    .sort((a, b) => compareRuns(a.list[0], b.list[0]));
+  let shown = 0;
+  for (const { key, list } of ordered) {
+    if (shown >= 10) break;
+    if (ordered.length > 1) {
+      const head = el.ownerDocument.createElement("div");
+      head.textContent = key === "unknown" ? "Unknown layout:" : `Layout ${key}:`;
+      head.style.fontWeight = "600";
+      el.appendChild(head);
+      shown++;
+    }
+    for (const r of list) {
+      if (shown >= 10) break;
+      const rank = list.filter((o) => compareRuns(o, r) < 0).length + 1;
+      const row = el.ownerDocument.createElement("div");
+      const date = new Date(r.at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      // Playback speed is metadata, not part of the score - shown because
+      // island time can drift slightly with playback speed (tick
+      // quantization), so cross-speed rows are only roughly comparable.
+      const layout = key === "unknown" ? "unknown layout" : `layout ${key}`;
+      row.textContent = `#${rank} ${formatScore(r)} - ${layout} - ${r.driver}${r.model ? ` ${r.model}` : ""} - ${r.speed}x - ${date}`;
+      el.appendChild(row);
+      shown++;
+    }
+  }
 }
