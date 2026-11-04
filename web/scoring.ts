@@ -139,6 +139,15 @@ export function formatScore(run: RunRecord): string {
   return `${run.elapsed.toFixed(1)}s`;
 }
 
+// Smallest precision (1-3 decimals) at which two raw scores display
+// differently. Distinct raw scores can still collide at one decimal
+// (154.41 vs 154.44); banners use this so a genuine new best never
+// displays the same string as the best it beat.
+function distinctPrecision(a: number, b: number): number {
+  for (const p of [1, 2, 3]) if (a.toFixed(p) !== b.toFixed(p)) return p;
+  return 3;
+}
+
 // Display labels for banner copy; raw mode ids are internal.
 const MODE_LABELS: Record<string, string> = {
   maze: "the Stone Maze",
@@ -159,7 +168,9 @@ export function bannerLine(run: RunRecord, runs: RunRecord[]): string {
   const scope = run.seed != null ? "on this layout" : `in ${modeLabel(run.mode)}`;
   const others = pool.filter((r) => r !== run);
   if (others.length > 0 && others.every((r) => compareRuns(r, run) > 0)) {
-    return `New best ${scope}: ${formatScore(run)}`;
+    const prevBest = others.reduce((m, r) => (compareRuns(r, m) < 0 ? r : m));
+    const p = distinctPrecision(run.elapsed, prevBest.elapsed);
+    return `New best ${scope}: ${run.elapsed.toFixed(p)}s`;
   }
   if (pool.length > 1) return `${formatScore(run)} - #${rank} of ${pool.length} runs ${scope}`;
   return `Finished in ${formatScore(run)} of island time`;
