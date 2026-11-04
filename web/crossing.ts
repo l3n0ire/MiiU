@@ -16,6 +16,7 @@ import { LongCrossing, CROSS_W as PUZZLE_W, CROSS_H as PUZZLE_H, type CrewMember
 import { MindfulCrew, type MindScenario } from "./puzzle-minds.ts";
 import { createJsonCaller } from "../server/llm-json.ts";
 import { migrateWorld, seedWorld } from "../server/world.ts";
+import { recordCompletion, renderHistory } from "./scoring-ui.ts";
 
 const TILE = 40;
 const canvas = document.getElementById("puzzleMap") as HTMLCanvasElement;
@@ -508,6 +509,9 @@ function draw() {
     }
     $("winBanner").style.display = "";
     $("winStats").textContent = `Built in ${Math.round(s.elapsed)}s of island time - ${s.totalPieces} pieces placed across two rivers, ${s.assists} team lift${s.assists === 1 ? "" : "s"}.`;
+    const { line: scoreText } = recordCompletion(localStorage, { mode: "crossing", seed: s.seed, minds, sharing: null, elapsed: s.elapsed, speed: puzzle.speed });
+    $("scoreLine").textContent = scoreText;
+    renderHistory(localStorage, "crossing", $("historyList"));
   }
   confetti = confetti.filter((c) => c.t < 2.5);
   for (const c of confetti) {
@@ -602,3 +606,6 @@ $("chatterBtn").addEventListener("click", () => {
 connectFromStorage();
 renderCrewPanel();
 requestAnimationFrame(frame);
+
+// Show this mode's saved run history on load.
+renderHistory(localStorage, "crossing", $("historyList"));

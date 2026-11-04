@@ -28,7 +28,7 @@
     .empty { color: var(--muted); }
     #winBanner { background: #fff1d6; border-radius: 10px; padding: 12px; margin-bottom: 16px; }
     #winBanner b { display: block; margin-bottom: 2px; }
-    #winStats { color: var(--muted); font-size: 13px; }
+    #winStats, #scoreLine { color: var(--muted); font-size: 13px; display: block; }
     .hint { color: var(--muted); font-size: 13px; }
     #nowLine { font-size: 15px; font-weight: 600; margin: 8px 2px 0; min-height: 1.3em; }
   </style>
@@ -48,6 +48,7 @@
       <div id="winBanner" style="display:none">
         <b>The crew built both bridges and made it across!</b>
         <span id="winStats"></span>
+        <span id="scoreLine"></span>
       </div>
       <div class="panel"><canvas id="puzzleMap"></canvas></div>
       <p id="nowLine" aria-live="polite"></p>
@@ -79,6 +80,10 @@
         claiming work, asking for a lift partner, answering or declining each other's asks. Same rules,
         same reachability, the miis still do the lifting.</p>
         <button id="chatterBtn" class="primary" style="width:100%">Show chatter</button>
+      </div>
+      <div class="panel" id="historyPanel">
+        <h2>Run history</h2>
+        <div id="historyList" class="hint" style="font-size:13px;line-height:1.7">No completed runs yet.</div>
       </div>
       <div class="panel" id="logPanel" style="display:none">
         <h2>Chatter</h2>
