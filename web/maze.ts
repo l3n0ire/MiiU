@@ -19,6 +19,7 @@ import { Maze, MAZE_W, MAZE_H, type CrewMember, type CellEdge } from "./maze-eng
 import { MazeMinds } from "./maze-minds.ts";
 import { createJsonCaller } from "../server/llm-json.ts";
 import { migrateWorld, seedWorld } from "../server/world.ts";
+import { recordCompletion, renderHistory } from "./scoring-ui.ts";
 
 const TILE = 40;
 const canvas = document.getElementById("puzzleMap") as HTMLCanvasElement;
@@ -542,6 +543,9 @@ function draw() {
       : "Nobody found a hidden crack this run.";
     const cache = s.stats.cacheDeliveredBy ? ` ${s.stats.cacheDeliveredBy} brought home the golden cache crate!` : "";
     $("winStats").textContent = `Done in ${Math.round(s.elapsed)}s of island time - ${s.delivered}/${s.total} crates${minds ? `, ${minds.stats().calls} model calls` : ""} (sharing ${s.sharingAllowed ? "on" : "off"}). ${knowledge}${cache}`;
+    const { line: scoreText } = recordCompletion(localStorage, { mode: "maze", seed: s.seed, minds, sharing: s.sharingAllowed, elapsed: s.elapsed, speed: puzzle.speed });
+    if (scoreText) $("scoreLine").textContent = scoreText;
+    renderHistory(localStorage, "maze", $("historyList"));
     // Same-layout comparison with the previous completed run on this page.
     // Descriptive, not a controlled experiment - model choices are stochastic.
     const prev = $("prevStats");
@@ -550,7 +554,7 @@ function draw() {
     } else {
       prev.textContent = "";
     }
-    lastRun = { sharing: s.sharingAllowed, calls: minds ? minds.stats().calls : null, elapsed: s.elapsed, seed: s.seed, found, shared, cache: s.stats.cacheDeliveredBy };
+    lastRun = { sharing: s.sharingAllowed, calls: minds ? minds.stats().calls : 0, elapsed: s.elapsed, seed: s.seed, found, shared, cache: s.stats.cacheDeliveredBy };
   }
   // failure banner
   if (s.status === "failed" && !failedShown) {
@@ -628,3 +632,6 @@ puzzle.setSharing(mazeOptions.sharing);
 connectFromStorage();
 renderCrewPanel();
 requestAnimationFrame(frame);
+
+// Show this mode's saved run history on load.
+renderHistory(localStorage, "maze", $("historyList"));

@@ -28,7 +28,7 @@
     .empty { color: var(--muted); }
     #winBanner { background: #fff1d6; border-radius: 10px; padding: 12px; margin-bottom: 16px; }
     #winBanner b { display: block; margin-bottom: 2px; }
-    #winStats, #prevStats { color: var(--muted); font-size: 13px; display: block; }
+    #winStats, #prevStats, #scoreLine { color: var(--muted); font-size: 13px; display: block; }
     #failBanner { background: #fbe3e0; border: 1px solid #e5b3ad; border-radius: 10px; padding: 12px; margin-bottom: 16px; }
     #failBanner b { display: block; margin-bottom: 2px; }
     #failText { color: #7a3a32; font-size: 13px; display: block; margin-bottom: 8px; }
@@ -53,6 +53,7 @@
         <b>The crew brought all the supplies home!</b>
         <span id="winStats"></span>
         <span id="prevStats"></span>
+        <span id="scoreLine"></span>
       </div>
       <div id="failBanner" style="display:none">
         <b>The agents failed to accomplish the task.</b>
@@ -84,6 +85,10 @@
         scouts or shares. A new layout is generated each puzzle; Restart replays this one so you can compare
         runs (for example sharing on vs off - a descriptive comparison, not a controlled experiment).</p>
         <button id="chatterBtn" class="primary" style="width:100%">Hide feed</button>
+      </div>
+      <div class="panel" id="historyPanel">
+        <h2>Run history</h2>
+        <div id="historyList" class="hint" style="font-size:13px;line-height:1.7">No completed runs yet.</div>
       </div>
       <div class="panel" id="logPanel">
         <h2>What happened</h2>

@@ -18,6 +18,7 @@ import { Expedition, EXP_W, EXP_H, type CrewMember } from "./expedition-engine.t
 import { PassMinds } from "./expedition-minds.ts";
 import { createJsonCaller } from "../server/llm-json.ts";
 import { migrateWorld, seedWorld } from "../server/world.ts";
+import { recordCompletion, renderHistory } from "./scoring-ui.ts";
 
 const TILE = 40;
 const canvas = document.getElementById("puzzleMap") as HTMLCanvasElement;
@@ -495,6 +496,9 @@ function draw() {
         : `${found} found the hidden pass and kept it private - only ${found}'s trips used it.`
       : "Nobody found the hidden pass - the crew took the long way.";
     $("winStats").textContent = `Done in ${Math.round(s.elapsed)}s of island time - ${s.delivered}/${s.total} crates${minds ? `, ${minds.stats().calls} model calls` : ""} (sharing ${s.sharingAllowed ? "on" : "off"}). ${knowledge}`;
+    const { line: scoreText } = recordCompletion(localStorage, { mode: "expedition", seed: s.seed, minds, sharing: s.sharingAllowed, elapsed: s.elapsed, speed: puzzle.speed });
+    if (scoreText) $("scoreLine").textContent = scoreText;
+    renderHistory(localStorage, "expedition", $("historyList"));
     // Same-layout comparison with the previous completed run on this page.
     // Descriptive, not a controlled experiment - model choices are stochastic.
     const prev = $("prevStats");
@@ -503,7 +507,7 @@ function draw() {
     } else {
       prev.textContent = "";
     }
-    lastRun = { sharing: s.sharingAllowed, calls: minds ? minds.stats().calls : null, elapsed: s.elapsed, seed: s.seed, found, shared };
+    lastRun = { sharing: s.sharingAllowed, calls: minds ? minds.stats().calls : 0, elapsed: s.elapsed, seed: s.seed, found, shared };
   }
   // failure banner
   if (s.status === "failed" && !failedShown) {
@@ -578,3 +582,6 @@ puzzle.setSharing(passOptions.sharing);
 connectFromStorage();
 renderCrewPanel();
 requestAnimationFrame(frame);
+
+// Show this mode's saved run history on load.
+renderHistory(localStorage, "expedition", $("historyList"));
