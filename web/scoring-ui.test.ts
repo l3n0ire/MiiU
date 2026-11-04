@@ -49,21 +49,21 @@ test("recordCompletion: strictly faster rerun on the same layout is a new best",
   const s = memStorage();
   recordCompletion(s, { ...base, minds: null });
   const { line } = recordCompletion(s, { ...base, elapsed: 80, minds: null });
-  assert.equal(line, "New best on this layout: 80s");
+  assert.equal(line, "New best on this layout: 80.0s");
 });
 
 test("recordCompletion: tying the best is not announced as a new best", () => {
   const s = memStorage();
   recordCompletion(s, { ...base, minds: null });
   const { line } = recordCompletion(s, { ...base, minds: null });
-  assert.equal(line, "100s - #1 of 2 runs on this layout");
+  assert.equal(line, "100.0s - #1 of 2 runs on this layout");
 });
 
 test("recordCompletion: slower rerun ranks behind, counts include the new run", () => {
   const s = memStorage();
   recordCompletion(s, { ...base, minds: null });
   const { line } = recordCompletion(s, { ...base, elapsed: 120, minds: null });
-  assert.equal(line, "120s - #2 of 2 runs on this layout");
+  assert.equal(line, "120.0s - #2 of 2 runs on this layout");
 });
 
 test("recordCompletion: a different layout seed is not comparable (no best/rank line)", () => {
@@ -104,8 +104,8 @@ test("renderHistory: rows show rank, score, layout, driver, playback speed and d
   };
   renderHistory(s, "maze", fakeEl as unknown as HTMLElement);
   assert.equal(rows.length, 2);
-  assert.match(rows[0], /^#1 100s - layout #7 - builtin - 1x - /);
-  assert.match(rows[1], /^#2 120s - layout #7 - model qwen \(Ollama\) - 4x - /);
+  assert.match(rows[0], /^#1 100.0s - layout #7 - builtin - 1x - /);
+  assert.match(rows[1], /^#2 120.0s - layout #7 - model qwen \(Ollama\) - 4x - /);
 });
 
 test("renderHistory: empty history shows the empty state", () => {
