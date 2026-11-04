@@ -123,6 +123,12 @@ test("sub-second new best is visible, not hidden by rounding (UI bug report)", (
   // sub-tenth improvements collide at one decimal (154.41 vs 154.44 both
   // "154.4s"): the banner raises precision until the new best is distinct
   assert.match(bannerLine(run({ elapsed: 154.41 }), [run({ elapsed: 154.44 })]), /New best on this layout: 154.41s/);
+  // cap collision: distinct raws equal at 3 decimals get a non-numeric
+  // label, never a misleading equal number
+  assert.equal(
+    bannerLine(run({ elapsed: 154.40001 }), [run({ elapsed: 154.40004 })]),
+    "New best on this layout (improvement below displayed precision)",
+  );
 });
 
 test("playback speed leaves completion time within tick quantization (integration, built-in maze run)", async () => {
