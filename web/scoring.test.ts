@@ -96,20 +96,30 @@ test("loadHistory tolerates missing and corrupt data", () => {
 
 test("bannerLine announces new best, ranked finish, and first finish", () => {
   const first = run({ elapsed: 155 });
-  assert.match(bannerLine(first, [first]), /Finished in 155s/);
+  assert.match(bannerLine(first, [first]), /Finished in 155.0s/);
   const runs = [run({ elapsed: 200 }), run({ elapsed: 120 })];
   assert.match(bannerLine(run({ elapsed: 155 }), [...runs, run({ elapsed: 155 })]), /#2 of 3 runs on this layout/);
   // strictly faster than all others: a new best
-  assert.match(bannerLine(run({ elapsed: 100 }), runs), /New best on this layout: 100s/);
+  assert.match(bannerLine(run({ elapsed: 100 }), runs), /New best on this layout: 100.0s/);
   // tying the best is rank #1 but NOT a new best (equal times are equal scores)
   assert.match(bannerLine(run({ elapsed: 120 }), [...runs]), /#1 of 2 runs on this layout/);
   // null-seed scope uses the mode's display label, not the raw id
   const p60 = run({ mode: "puzzle", seed: null, elapsed: 60 });
-  assert.match(bannerLine(p60, [p60, run({ mode: "puzzle", seed: null, elapsed: 90 })]), /New best in the Bridge Puzzle: 60s/);
+  assert.match(bannerLine(p60, [p60, run({ mode: "puzzle", seed: null, elapsed: 90 })]), /New best in the Bridge Puzzle: 60.0s/);
 });
 
-test("formatScore rounds island seconds", () => {
-  assert.equal(formatScore(run({ elapsed: 155.4 })), "155s");
+test("formatScore shows one decimal of island seconds", () => {
+  assert.equal(formatScore(run({ elapsed: 155.4 })), "155.4s");
+  assert.equal(formatScore(run({ elapsed: 155 })), "155.0s");
+});
+
+test("sub-second new best is visible, not hidden by rounding (UI bug report)", () => {
+  // Peer-found bug: 154.5 vs 155.0 both displayed "155s", so a real new
+  // best read as "New best 155s" over "Previous 155s". One-decimal display
+  // keeps the improvement visible; raw scores were already correct.
+  const prev = run({ elapsed: 155.0 });
+  assert.match(bannerLine(run({ elapsed: 154.5 }), [prev]), /New best on this layout: 154.5s/);
+  assert.match(bannerLine(prev, [prev, run({ elapsed: 154.5 })]), /#2 of 2 runs on this layout/);
 });
 
 test("playback speed leaves completion time within tick quantization (integration, built-in maze run)", async () => {
@@ -133,8 +143,9 @@ test("playback speed leaves completion time within tick quantization (integratio
   const at4x = finish(4);
   // NOT exact speed-invariance: elapsed accumulates in per-tick chunks of
   // dt*speed and dispatch rounds discard sub-round overshoot, so raw
-  // completion time can drift ~1s between speeds (154.5s @1x vs 155.0s @4x
-  // observed). Assert the honest quantization bound - not rounded equality,
-  // which would hide the drift behind display formatting.
+  // completion time drifts with speed. Asserts only this measured case
+  // (154.5s @1x vs 155.0s @4x observed) - not a proved global bound;
+  // higher speeds or longer runs can drift more. No rounded-equality
+  // assertion, which would hide the drift behind display formatting.
   assert.ok(Math.abs(at1x - at4x) <= 1, `1x (${at1x}) and 4x (${at4x}) within tick quantization`);
 });
