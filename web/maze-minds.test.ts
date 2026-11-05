@@ -223,3 +223,52 @@ test("sharing OFF: cache activity never reaches an ignorant mii's actual prompt"
     assert.ok(q.prompt.includes("Marlo"), "public board activity still reaches ignorant miis");
   }
 });
+
+test("a timed-out mii is covered by built-in, then the model retries and drives again", async () => {
+  const clock = { t: 10_000 };
+  const p = new Maze(CREW, 7);
+  const opts: { failFor?: string; hangFor?: string } = { hangFor: "Juniper" };
+  const caller = mindCaller(cooperative, opts);
+  const minds = new MazeMinds(caller, { now: () => clock.t, maxCalls: 200 });
+  p.setController(minds);
+  p.tick(0.5); // Juniper's call starts (hangs)
+  await flush();
+  clock.t += 31_000; // past the 30s timeout
+  p.tick(0.5);
+  await flush();
+  const fallen = minds.statuses().find((s) => s.name === "Juniper")!;
+  assert.equal(fallen.state, "fallback");
+  assert.match(fallen.detail, /built-in \(no answer after 30s/);
+  assert.match(fallen.detail, /retrying/);
+  // the model comes back: after the retry backoff the next call answers and Juniper decides again
+  opts.hangFor = undefined;
+  clock.t += 61_000; // past the retry backoff
+  p.tick(0.5);
+  await flush();
+  const back = minds.statuses().find((s) => s.name === "Juniper")!;
+  assert.notEqual(back.state, "fallback", "Juniper recovered once the model answered");
+  const juniperCalls = caller.prompts.filter((q) => q.me === "Juniper").length;
+  assert.ok(juniperCalls >= 2, "the model was retried after the timeout");
+});
+
+test("the per-call timeout is adjustable: a slow model gets the configured room", async () => {
+  const clock = { t: 10_000 };
+  const p = new Maze(CREW, 7);
+  const opts: { failFor?: string; hangFor?: string } = { hangFor: "Juniper" };
+  const caller = mindCaller(cooperative, opts);
+  const minds = new MazeMinds(caller, { now: () => clock.t, maxCalls: 50, thinkingTimeoutMs: 90_000 });
+  p.setController(minds);
+  p.tick(0.5); // Juniper's call starts (hangs)
+  await flush();
+  clock.t += 45_000; // past the old 30s default, inside the configured 90s
+  p.tick(0.5);
+  await flush();
+  const thinking = minds.statuses().find((s) => s.name === "Juniper")!;
+  assert.notEqual(thinking.state, "fallback", "no fallback inside the configured timeout");
+  clock.t += 46_000; // past 90s
+  p.tick(0.5);
+  await flush();
+  const fallen = minds.statuses().find((s) => s.name === "Juniper")!;
+  assert.equal(fallen.state, "fallback");
+  assert.match(fallen.detail, /no answer after 90s/);
+});
