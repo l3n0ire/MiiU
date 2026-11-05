@@ -41,6 +41,20 @@
 // COMPARISON: a sharing on/off toggle plus same-layout restart lets a viewer
 // compare runs. Those stats are descriptive (model choices are stochastic);
 // they are not a controlled experiment.
+//
+// THE JAILER: a jailer starts near the middle of the completion path (the
+// midpoint of the camp-to-farthest-crate route) and wanders around its post.
+// It has straight-corridor line of sight: spot a mii down a corridor and it
+// runs at it. On contact the mii is dragged to the jail (a camp-side dead
+// end), the jailer vanishes, and a jail key appears somewhere on the map.
+// Another mii can fetch the key and free the captive - then the jailer
+// respawns far from the crew (the reachable cell with the greatest minimum
+// path distance to any free mii) and re-posts there, patrolling that far
+// corner instead of returning to the middle next to the rescue. One captive
+// at a time (it is gone while someone is
+// jailed). The crew can still finish without freeing anyone. After the FIRST
+// capture every mii knows to avoid the jailer: they route around it when they
+// can and run from it when it chases.
 
 export interface Vec { x: number; y: number }
 export interface CrewMember { id: string; name: string; color: string }
@@ -55,10 +69,19 @@ const DELIVER_DIST = 0.9;
 const PLATE_DIST = 0.4;
 const DISPATCH_EVERY = 0.4; // seconds of scaled time between decision rounds
 const REPATH_EVERY = 0.5; // waiting members re-try their route this often
+const JAILER_SIGHT = 6; // straight-corridor line of sight, in tiles
+const JAILER_WANDER_RADIUS = 4; // manhattan distance the jailer roams from its post
+const JAILER_CHASE_SPEED = 3.6; // tiles per second at speed=1 (miis move at BASE_SPEED)
+const JAILER_WANDER_SPEED = 1.5;
+const JAILER_LOSE_SIGHT = 2.5; // scaled seconds without sight before the chase is dropped
+const CAPTURE_DIST = 0.55;
+const FLEE_SPEED_MULT = 1.3; // alerted miis outrun the jailer unless cornered
+const AVOID_RADIUS = 2; // alerted miis route around cells this close to the jailer
 
 export type MemberState =
   | "idle" | "wandering" | "scouting" | "toPlate" | "holding"
-  | "fetching" | "carrying" | "celebrating";
+  | "fetching" | "carrying" | "celebrating"
+  | "jailed" | "fleeing" | "toKey" | "toJail";
 
 export interface Member {
   id: string;
@@ -105,6 +128,24 @@ export interface MazeLayout {
   crack: CellEdge | null; // hidden edge into the sealed cache room (a = camp side)
   cache: { id: string; home: Vec } | null;
   chamber: Vec | null; // the sealed cache room cell
+  jail: Vec; // the jail cell: a camp-side dead end
+  jailerPost: Vec; // where the jailer starts: mid completion path (after a rescue it re-posts far from the crew)
+}
+
+export interface JailerState {
+  active: boolean; // false while a captive sits in jail (one capture at a time)
+  pos: Vec;
+  post: Vec;
+  path: Vec[];
+  targetId: string | null; // the mii it is chasing
+  loseT: number; // scaled seconds since the target was last seen
+  wanderT: number;
+}
+
+export interface JailKey {
+  pos: Vec;
+  claimedBy: string | null; // a mii on its way to pick it up
+  carriedBy: string | null; // a mii carrying it to the jail
 }
 
 // Per-member decision surface. It contains ONLY what this mii knows: the
@@ -134,10 +175,17 @@ export interface MazeMemberView {
   canScout: boolean;
   sharingAllowed: boolean;
   announcements: string[]; // public board: claims, holds and shares only
+  // the jailer is a visible character on the map: everyone sees where it is,
+  // but the crew only knows to AVOID it after the first capture
+  jailer: { active: boolean; x: number; y: number; chasing: string | null };
+  jail: { x: number; y: number };
+  captive: { id: string; name: string } | null;
+  key: { x: number; y: number; claimedBy: string | null; carriedBy: string | null } | null;
+  jailerAlert: boolean; // true once the first mii has been captured
 }
 
 export interface MazeDecision {
-  action: "fetch" | "hold" | "release" | "scout" | "share" | "wait";
+  action: "fetch" | "hold" | "release" | "scout" | "share" | "rescue" | "wait";
   crate?: string;
   plate?: string;
   reason: string;
@@ -172,12 +220,19 @@ export interface MazeSnapshot {
   delivered: number;
   total: number;
   sharingAllowed: boolean;
+  jail: Vec;
+  jailer: { active: boolean; x: number; y: number; chasing: string | null };
+  key: { x: number; y: number; claimedBy: string | null; carriedBy: string | null } | null;
+  captiveId: string | null;
+  jailerAlert: boolean;
   log: FeedLine[];
   stats: {
     discoveries: { by: string; name: string; t: number }[];
     shares: { by: string; name: string; t: number }[];
     routeUpdates: { member: string; name: string; via: string; t: number }[];
     cacheDeliveredBy: string | null;
+    captures: { mii: string; name: string; t: number }[];
+    rescues: { by: string; name: string; freed: string; t: number }[];
   };
 }
 
@@ -407,6 +462,64 @@ function tryDoor(rng: () => number, carved: Set<string>, door: CellEdge): MazeLa
     }
   }
 
+  // the jail: the deepest camp-side dead end away from camp and the plates.
+  // Deterministic from the carved maze - no rng draws, so layouts for every
+  // seed are exactly what they were before the jailer existed.
+  const degShut = new Map<string, number>();
+  for (const k of carved) {
+    if (k === doorK) continue;
+    const e = parseEkey(k);
+    degShut.set(key(e.ax, e.ay), (degShut.get(key(e.ax, e.ay)) ?? 0) + 1);
+    degShut.set(key(e.bx, e.by), (degShut.get(key(e.bx, e.by)) ?? 0) + 1);
+  }
+  let jailCells = aCells.filter((c) =>
+    (degShut.get(key(c.x, c.y)) ?? 0) === 1
+    && !occupied.has(key(c.x, c.y))
+    && Math.abs(c.x - camp.x) + Math.abs(c.y - camp.y) >= 4
+    && plates.every((p) => Math.abs(p.pos.x - c.x) + Math.abs(p.pos.y - c.y) >= 3));
+  if (!jailCells.length) {
+    jailCells = aCells.filter((c) =>
+      !occupied.has(key(c.x, c.y))
+      && Math.abs(c.x - camp.x) + Math.abs(c.y - camp.y) >= 3);
+  }
+  if (!jailCells.length) return null;
+  jailCells.sort((p, q) => (distFromA(q) ?? 0) - (distFromA(p) ?? 0)
+    || p.x - q.x || p.y - q.y);
+  const jail = { ...jailCells[0] };
+
+  // the jailer's post: the midpoint of the completion path (camp, through the
+  // door, to the farthest crate) - it patrols the route the crew must run
+  let farthest = crates[0];
+  for (const c of crates) if ((dOpen.get(key(c.home.x, c.home.y)) ?? 0) >= (dOpen.get(key(farthest.home.x, farthest.home.y)) ?? 0)) farthest = c;
+  const route = (() => {
+    const prev = new Map<string, string>();
+    const q = [{ x: camp.x, y: camp.y }];
+    const seen = new Set([key(camp.x, camp.y)]);
+    while (q.length) {
+      const c = q.shift()!;
+      if (c.x === farthest.home.x && c.y === farthest.home.y) {
+        const out: Vec[] = [];
+        let k = key(c.x, c.y);
+        while (k !== key(camp.x, camp.y)) {
+          const [x, y] = k.split(",").map(Number);
+          out.unshift({ x, y });
+          k = prev.get(k)!;
+        }
+        return out;
+      }
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = c.x + dx, ny = c.y + dy;
+        if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
+        const nk = key(nx, ny);
+        if (seen.has(nk) || !carved.has(ekey(c.x, c.y, nx, ny))) continue;
+        seen.add(nk); prev.set(nk, key(c.x, c.y)); q.push({ x: nx, y: ny });
+      }
+    }
+    return null;
+  })();
+  if (!route || route.length < 2) return null;
+  const jailerPost = { ...route[Math.floor(route.length / 2)] };
+
   return {
     carved: [...carved],
     door,
@@ -417,6 +530,8 @@ function tryDoor(rng: () => number, carved: Set<string>, door: CellEdge): MazeLa
     crack,
     cache,
     chamber,
+    jail,
+    jailerPost,
   };
 }
 
@@ -448,6 +563,12 @@ export class Maze {
   private cacheDeliveredBy: string | null = null;
   // Tiles each member has physically visited (drives "unscouted" targets).
   private visited = new Map<string, Set<string>>();
+  // The jailer, its captive, and the jail key (see the header comment).
+  readonly jailer: JailerState;
+  key: JailKey | null = null;
+  private jailerAlert = false; // after the first capture every mii knows to avoid it
+  private captures: { mii: string; name: string; t: number }[] = [];
+  private rescues: { by: string; name: string; freed: string; t: number }[] = [];
 
   constructor(crew: CrewMember[], seed = 7) {
     this.seed = seed;
@@ -476,8 +597,19 @@ export class Maze {
       });
     }
     this.plates = this.layout.plates.map((p) => ({ ...p, pos: { ...p.pos }, heldBy: null, claimedBy: null }));
+    this.jailer = {
+      active: true,
+      pos: center(this.layout.jailerPost),
+      post: center(this.layout.jailerPost),
+      path: [],
+      targetId: null,
+      loseT: 0,
+      wanderT: 1,
+    };
     for (const m of this.members) this.markVisited(m);
   }
+
+  captive(): Member | undefined { return this.members.find((m) => m.state === "jailed"); }
 
   setController(c: MazeController | null) { this.controller = c; }
   setSharing(on: boolean) { this.sharingAllowed = on; }
@@ -529,12 +661,17 @@ export class Maze {
   // or edgePlanned (planning); opts.skipDoor excludes the door edge (queueing).
   private bfsPath(
     memberId: string | null, from: Vec, to: Vec,
-    opts: { movement?: boolean; skipDoor?: boolean } = {},
+    opts: { movement?: boolean; skipDoor?: boolean; avoidJailer?: boolean } = {},
   ): Vec[] | null {
     const s = { x: Math.floor(from.x), y: Math.floor(from.y) };
     const g = { x: Math.floor(to.x), y: Math.floor(to.y) };
+    const jc = { x: Math.floor(this.jailer.pos.x), y: Math.floor(this.jailer.pos.y) };
     const pass = (ax: number, ay: number, bx: number, by: number) => {
       if (opts.skipDoor && edgeIs(this.layout.door, ax, ay, bx, by)) return false;
+      // alerted miis route around the jailer when they can (target cell exempt:
+      // a rescuer must still reach a jail it happens to stand next to)
+      if (opts.avoidJailer && !(bx === g.x && by === g.y)
+          && Math.abs(bx - jc.x) + Math.abs(by - jc.y) <= AVOID_RADIUS) return false;
       return opts.movement ? this.edgeOpen(memberId, ax, ay, bx, by) : this.edgePlanned(memberId, ax, ay, bx, by);
     };
     const prev = new Map<string, string>();
@@ -565,6 +702,16 @@ export class Maze {
 
   pathFor(memberId: string | null, from: Vec, to: Vec): Vec[] | null {
     return this.bfsPath(memberId, from, to, {});
+  }
+
+  // A mii's own route: once the crew knows about the jailer they try to route
+  // around it, falling back to the direct route when there is no other way.
+  private pathForMember(m: Member, to: Vec): Vec[] | null {
+    if (this.jailerAlert && this.jailer.active) {
+      const p = this.bfsPath(m.id, m.pos, to, { avoidJailer: true });
+      if (p) return p;
+    }
+    return this.bfsPath(m.id, m.pos, to, {});
   }
 
   // The queue cell on the camp side of the door: where a route toward the
@@ -662,6 +809,10 @@ export class Maze {
       case "carrying": return "carrying a crate";
       case "scouting": return "scouting the walls";
       case "celebrating": return "celebrating";
+      case "jailed": return "in jail";
+      case "fleeing": return "running from the jailer";
+      case "toKey": return "getting the jail key";
+      case "toJail": return "carrying the key to the jail";
       default: return "free";
     }
   }
@@ -719,6 +870,21 @@ export class Maze {
       canScout: this.canScout(memberId),
       sharingAllowed: this.sharingAllowed,
       announcements: this.announcements(memberId),
+      jailer: {
+        active: this.jailer.active,
+        x: this.jailer.pos.x, y: this.jailer.pos.y,
+        chasing: this.jailer.targetId ? (this.member(this.jailer.targetId)?.name ?? null) : null,
+      },
+      jail: { x: this.layout.jail.x, y: this.layout.jail.y },
+      captive: (() => {
+        const c = this.captive();
+        return c ? { id: c.id, name: c.name } : null;
+      })(),
+      key: this.key ? {
+        x: this.key.pos.x, y: this.key.pos.y,
+        claimedBy: this.key.claimedBy, carriedBy: this.key.carriedBy,
+      } : null,
+      jailerAlert: this.jailerAlert,
     };
   }
 
@@ -743,7 +909,7 @@ export class Maze {
       if (!c) return { ok: false, why: `no such crate (${String(d.crate)})` };
       if (c.delivered || c.claimedBy) return { ok: false, why: `${c.id} is already taken` };
       if (c.golden && !this.knowsCrack(m.id)) return { ok: false, why: "you do not know any hidden cache" };
-      const path = this.pathFor(m.id, m.pos, c.pos);
+      const path = this.pathForMember(m, c.pos);
       if (!path) return { ok: false, why: `no route to ${c.id} with what ${m.name} knows` };
       c.claimedBy = m.id;
       m.state = "fetching"; m.crate = c.id; m.path = path; m.repathT = 0;
@@ -754,7 +920,7 @@ export class Maze {
       const p = this.plates.find((q) => q.id === d.plate);
       if (!p) return { ok: false, why: `no such plate (${String(d.plate)})` };
       if (p.heldBy || (p.claimedBy && p.claimedBy !== m.id)) return { ok: false, why: `${p.id} is already taken` };
-      const path = this.pathFor(m.id, m.pos, center(p.pos));
+      const path = this.pathForMember(m, center(p.pos));
       if (!path) return { ok: false, why: `no route to ${p.id}` };
       p.claimedBy = m.id;
       m.state = "toPlate"; m.plate = p.id; m.path = path; m.repathT = 0;
@@ -767,7 +933,7 @@ export class Maze {
       if (!targets.length) return { ok: false, why: "there is nothing unscouted left along these walls" };
       targets.sort((a, b) => dist(m.pos, center(a)) - dist(m.pos, center(b)));
       const target = targets[0];
-      const path = this.pathFor(m.id, m.pos, center(target));
+      const path = this.pathForMember(m, center(target));
       if (!path) return { ok: false, why: "cannot reach that wall" };
       m.state = "scouting"; m.crate = null; m.path = path;
       this.say(m.name, "went to scout the walls for a hidden way.", m);
@@ -780,6 +946,19 @@ export class Maze {
       this.shared = { by: m.id, name: m.name, t: this.elapsed };
       this.say(m.name, `shared the hidden crack at (${this.layout.crack!.ax},${this.layout.crack!.ay}) with the crew - everyone can slip through to the cache now.`, m);
       this.replanAfterShare(m.id);
+      return { ok: true };
+    }
+    if (d.action === "rescue") {
+      const captive = this.captive();
+      if (!captive) return { ok: false, why: "no one is in jail" };
+      if (!this.key) return { ok: false, why: "there is no jail key to fetch" };
+      if (this.key.carriedBy) return { ok: false, why: "the jail key is already being carried" };
+      if (this.key.claimedBy && this.key.claimedBy !== m.id) return { ok: false, why: "the jail key is already being fetched" };
+      const path = this.pathForMember(m, this.key.pos);
+      if (!path) return { ok: false, why: "no route to the jail key" };
+      this.key.claimedBy = m.id;
+      m.state = "toKey"; m.path = path; m.repathT = 0;
+      this.say(m.name, `went to find the jail key for ${captive.name}.`, m);
       return { ok: true };
     }
     return { ok: false, why: `unknown action ${String(d.action)}` };
@@ -797,7 +976,7 @@ export class Maze {
         ? this.crates.find((c) => c.id === m.crate)?.pos
         : center(this.layout.camp);
       if (!goal) continue;
-      const path = this.pathFor(m.id, m.pos, goal);
+      const path = this.pathForMember(m, goal);
       if (!path) continue;
       const usesCrack = this.layout.crack !== null
         && this.pathCrossesEdge(path, this.layout.crack);
@@ -836,20 +1015,59 @@ export class Maze {
     // Built-in coordinator: keep two holders on the plates, send everyone
     // else fetching. Code-driven cooperation - it never scouts and never
     // shares, so it never finds the hidden cache (the UI says so).
+    const holding = m.state === "holding" || m.state === "toPlate";
+
+    // A captive's key beats any errand - but only a rescue the mii can REACH
+    // right now (movement mode: the shut door is a wall). A holder only drops
+    // its plate when no free mii can go instead. After one rescue the crew
+    // leaves later captives in jail and finishes the maze (the jailer is gone
+    // while someone is jailed, so the remaining miis work undisturbed) -
+    // unless too few free camp-side miis remain to man the plates, which
+    // would deadlock the door without freeing the captive.
+    const captive = this.captive();
+    if (captive && this.key && !this.key.claimedBy && !this.key.carriedBy) {
+      const path = this.bfsPath(m.id, m.pos, this.key.pos, { movement: true });
+      if (path) {
+        const freeRescuer = this.members.some((o) => o.id !== m.id && this.free(o)
+          && this.bfsPath(o.id, o.pos, this.key!.pos, { movement: true }) !== null);
+        const campHands = this.members.filter((o) => o.state !== "jailed"
+          && this.plates.some((p) => this.bfsPath(o.id, o.pos, center(p.pos), { movement: true }) !== null)).length;
+        const neededForDoor = campHands < this.plates.length;
+        if ((this.rescues.length === 0 || neededForDoor) && (!holding || !freeRescuer)) {
+          const myPlate = m.plate ? this.plates.find((p) => p.id === m.plate) : null;
+          if (myPlate) {
+            if (myPlate.heldBy === m.id) myPlate.heldBy = null;
+            if (myPlate.claimedBy === m.id) myPlate.claimedBy = null;
+            m.plate = null;
+          }
+          const c = this.crates.find((q) => q.id === m.crate);
+          if (c) {
+            if (m.state === "carrying") c.pos = { ...m.pos };
+            if (c.claimedBy === m.id) c.claimedBy = null;
+            m.crate = null;
+          }
+          this.key.claimedBy = m.id;
+          m.state = "toKey"; m.path = path; m.repathT = 0;
+          this.say(m.name, `went to find the jail key for ${captive.name}.`, m);
+          return;
+        }
+      }
+    }
     const holders = this.members.filter((o) => o.state === "holding" || o.state === "toPlate");
     const myPlate = m.plate ? this.plates.find((p) => p.id === m.plate) : null;
     if (myPlate && (myPlate.heldBy === m.id || myPlate.claimedBy === m.id)) return; // already assigned
-    if (holders.length < 2) {
+    if (holders.length < this.plates.length) {
+      // plates are camp-side: only claim one the mii can actually reach now
       const openPlates = this.plates
         .filter((p) => !p.heldBy && !p.claimedBy)
-        .map((p) => ({ p, len: this.pathLen(m.id, m.pos, center(p.pos)) }))
-        .filter((q): q is { p: Plate; len: number } => q.len !== null)
-        .sort((a, b) => a.len - b.len);
+        .map((p) => ({ p, path: this.bfsPath(m.id, m.pos, center(p.pos), { movement: true }) }))
+        .filter((q): q is { p: Plate; path: Vec[] } => q.path !== null);
+      openPlates.sort((a, b) => a.path.length - b.path.length);
       if (openPlates.length) {
         const p = openPlates[0].p;
         p.claimedBy = m.id;
         m.state = "toPlate"; m.plate = p.id;
-        m.path = this.pathFor(m.id, m.pos, center(p.pos))!;
+        m.path = openPlates[0].path;
         m.repathT = 0;
         this.say(m.name, `went to hold ${p.id}.`, m);
         return;
@@ -858,7 +1076,7 @@ export class Maze {
     let best: { c: Crate; len: number; path: Vec[] } | null = null;
     for (const c of this.crates) {
       if (c.delivered || c.claimedBy || c.golden) continue; // cache needs knowledge the built-in never gets
-      const path = this.pathFor(m.id, m.pos, c.pos);
+      const path = this.pathForMember(m, c.pos);
       if (!path) continue;
       const len = this.pathLen(m.id, m.pos, c.pos)!;
       if (!best || len < best.len) best = { c, len, path };
@@ -868,6 +1086,220 @@ export class Maze {
       m.state = "fetching"; m.crate = best.c.id; m.path = best.path; m.repathT = 0;
       this.say(m.name, `set out for ${best.c.id}.`, m);
     }
+  }
+
+  // ---- the jailer ----
+
+  // Straight-corridor line of sight: same row or column, every edge between
+  // carved and passable (the stone door blocks sight while shut, the hidden
+  // crack is no shortcut for the jailer).
+  private corridorLOS(a: Vec, b: Vec): boolean {
+    const ca = { x: Math.floor(a.x), y: Math.floor(a.y) };
+    const cb = { x: Math.floor(b.x), y: Math.floor(b.y) };
+    if (ca.x === cb.x && ca.y === cb.y) return true;
+    if (ca.x === cb.x) {
+      const [y0, y1] = ca.y < cb.y ? [ca.y, cb.y] : [cb.y, ca.y];
+      for (let y = y0; y < y1; y++) if (!this.edgeOpen(null, ca.x, y, ca.x, y + 1)) return false;
+      return true;
+    }
+    if (ca.y === cb.y) {
+      const [x0, x1] = ca.x < cb.x ? [ca.x, cb.x] : [cb.x, ca.x];
+      for (let x = x0; x < x1; x++) if (!this.edgeOpen(null, x, ca.y, x + 1, ca.y)) return false;
+      return true;
+    }
+    return false;
+  }
+
+  // The nearest mii the jailer can see down a corridor.
+  private jailerSees(): Member | null {
+    const j = this.jailer;
+    let best: Member | null = null;
+    let bestD = Infinity;
+    for (const m of this.members) {
+      if (m.state === "jailed" || m.state === "celebrating") continue;
+      const d = dist(j.pos, m.pos);
+      if (d > JAILER_SIGHT || d >= bestD) continue;
+      if (this.corridorLOS(j.pos, m.pos)) { best = m; bestD = d; }
+    }
+    return best;
+  }
+
+  private stepJailer(dt: number, tilesPerSec: number): boolean {
+    const j = this.jailer;
+    let budget = tilesPerSec * this.speed * dt;
+    while (budget > 0 && j.path.length) {
+      const next = j.path[0];
+      const cx = Math.floor(j.pos.x), cy = Math.floor(j.pos.y);
+      const nx = Math.floor(next.x), ny = Math.floor(next.y);
+      if ((nx !== cx || ny !== cy) && !this.edgeOpen(null, cx, cy, nx, ny)) return false;
+      const d = dist(j.pos, next);
+      if (d <= budget) { j.pos = next; j.path.shift(); budget -= d; }
+      else {
+        j.pos = { x: j.pos.x + ((next.x - j.pos.x) / d) * budget, y: j.pos.y + ((next.y - j.pos.y) / d) * budget };
+        budget = 0;
+      }
+    }
+    return j.path.length === 0;
+  }
+
+  private jailerTick(dt: number) {
+    const j = this.jailer;
+    if (!j.active || this.status !== "running") return;
+    const spotted = this.jailerSees();
+    if (spotted) { j.targetId = spotted.id; j.loseT = 0; }
+    else if (j.targetId) {
+      j.loseT += dt * this.speed;
+      if (j.loseT > JAILER_LOSE_SIGHT) { j.targetId = null; j.path = []; }
+    }
+    const target = this.member(j.targetId);
+    if (target && target.state !== "jailed" && target.state !== "celebrating") {
+      const path = this.bfsPath(null, j.pos, target.pos, {});
+      if (path) j.path = path; // else: shut door between them - it waits
+      this.stepJailer(dt, JAILER_CHASE_SPEED);
+      if (dist(j.pos, target.pos) <= CAPTURE_DIST) this.capture(target);
+      return;
+    }
+    if (j.targetId) { j.targetId = null; j.path = []; }
+    // basic wandering: roam within reach of its post
+    if (j.path.length) { this.stepJailer(dt, JAILER_WANDER_SPEED); return; }
+    j.wanderT -= dt * this.speed;
+    if (j.wanderT <= 0) {
+      j.wanderT = 1.5 + this.rng() * 3;
+      const postCell = { x: Math.floor(j.post.x), y: Math.floor(j.post.y) };
+      const opts: Vec[] = [];
+      for (const [k] of bfs(this.carvedSet, postCell)) {
+        const [x, y] = k.split(",").map(Number);
+        if (Math.abs(x - postCell.x) + Math.abs(y - postCell.y) <= JAILER_WANDER_RADIUS) opts.push({ x, y });
+      }
+      if (opts.length) {
+        const spot = opts[Math.floor(this.rng() * opts.length)];
+        const path = this.bfsPath(null, j.pos, center(spot), {});
+        if (path) j.path = path;
+      }
+    }
+  }
+
+  // Where the jailer reappears after a rescue: the reachable cell with the
+  // greatest minimum path distance to everything the crew still cares about -
+  // every free mii (the just-freed captive included), every undelivered
+  // crate, every unmanned plate, the camp and the door - so it reappears far
+  // from the crew and far from the routes it must still run, instead of
+  // popping back in next to the rescue or camping the fetch corridor.
+  // Deterministic: max min-distance, then cell order. A spot whose region is
+  // still sealed off contributes no constraint (its distance map does not
+  // reach the crew's side).
+  respawnSpot(): Vec {
+    const free = this.members.filter((m) => m.state !== "jailed");
+    const spots: Vec[] = free.map((m) => ({ x: Math.floor(m.pos.x), y: Math.floor(m.pos.y) }));
+    for (const c of this.crates) if (!c.delivered) spots.push({ x: Math.floor(c.pos.x), y: Math.floor(c.pos.y) });
+    for (const pl of this.plates) if (!pl.heldBy) spots.push({ x: Math.floor(pl.pos.x), y: Math.floor(pl.pos.y) });
+    spots.push({ x: Math.floor(this.layout.camp.x), y: Math.floor(this.layout.camp.y) });
+    spots.push({ x: this.layout.door.ax, y: this.layout.door.ay });
+    const maps = spots
+      .map((sp) => bfs(this.carvedSet, sp))
+      .filter((mp) => mp.size > this.carvedSet.size / 2);
+    const fallback = { x: Math.floor(this.jailer.post.x), y: Math.floor(this.jailer.post.y) };
+    let best: Vec = fallback, bestD = -1;
+    const cells = new Set<string>();
+    for (const mp of maps) for (const k of mp.keys()) cells.add(k);
+    for (const k of cells) {
+      let d = Infinity;
+      for (const mp of maps) d = Math.min(d, mp.get(k) ?? Infinity);
+      const [x, y] = k.split(",").map(Number);
+      if (d > bestD || (d === bestD && (x < best.x || (x === best.x && y < best.y)))) { bestD = d; best = { x, y }; }
+    }
+    return bestD >= 0 ? best : fallback;
+  }
+
+  // A random reachable cell for the jail key, on the CAMP side of the door
+  // (except the camp, the jail, the door cells, the plates and live crates):
+  // the captive is jailed on the camp side, so the key must be reachable
+  // without crossing the shut door - a warrens-side key could never be
+  // delivered while a capture leaves every free mii stuck warrens-side.
+  private keySpot(): Vec {
+    const off = new Set<string>([
+      key(this.layout.camp.x, this.layout.camp.y),
+      key(this.layout.jail.x, this.layout.jail.y),
+      key(this.layout.door.ax, this.layout.door.ay),
+      key(this.layout.door.bx, this.layout.door.by),
+      ...this.plates.map((p) => key(p.pos.x, p.pos.y)),
+      ...this.crates.filter((c) => !c.delivered).map((c) => key(Math.floor(c.pos.x), Math.floor(c.pos.y))),
+    ]);
+    const doorE = ekey(this.layout.door.ax, this.layout.door.ay, this.layout.door.bx, this.layout.door.by);
+    const cells: Vec[] = [];
+    for (const [k] of bfs(new Set([...this.carvedSet].filter((e) => e !== doorE)), this.layout.camp)) {
+      if (off.has(k)) continue;
+      const [x, y] = k.split(",").map(Number);
+      cells.push({ x, y });
+    }
+    if (!cells.length) {
+      for (const [k] of bfs(this.carvedSet, this.layout.camp)) {
+        if (off.has(k)) continue;
+        const [x, y] = k.split(",").map(Number);
+        cells.push({ x, y });
+      }
+    }
+    if (!cells.length) return { x: this.layout.door.ax, y: this.layout.door.ay };
+    return cells[Math.floor(this.rng() * cells.length)];
+  }
+
+  private capture(m: Member) {
+    // whatever the mii was doing is interrupted: the crate is dropped where it
+    // was caught, the plate is released, a carried key falls there too
+    if (m.crate) {
+      const c = this.crates.find((q) => q.id === m.crate);
+      if (c) {
+        if (m.state === "carrying") c.pos = { ...m.pos };
+        if (c.claimedBy === m.id) c.claimedBy = null;
+      }
+    }
+    if (m.plate) {
+      const p = this.plates.find((q) => q.id === m.plate);
+      if (p) { if (p.heldBy === m.id) p.heldBy = null; if (p.claimedBy === m.id) p.claimedBy = null; }
+    }
+    if (this.key) {
+      if (this.key.carriedBy === m.id) { this.key.pos = { ...m.pos }; this.key.carriedBy = null; }
+      if (this.key.claimedBy === m.id) this.key.claimedBy = null;
+    }
+    m.state = "jailed"; m.path = []; m.crate = null; m.plate = null; m.bubble = null;
+    m.pos = center(this.layout.jail);
+    this.jailer.active = false; this.jailer.targetId = null; this.jailer.path = [];
+    this.jailerAlert = true; // from the first capture on, every mii knows to avoid it
+    this.captures.push({ mii: m.id, name: m.name, t: this.elapsed });
+    const spot = this.keySpot();
+    this.key = { pos: center(spot), claimedBy: null, carriedBy: null };
+    this.say(m.name, `was caught by the jailer and dragged off to jail! The jailer vanishes - and a jail key appeared somewhere in the maze.`, m);
+    this.say("Puzzle", `${m.name} is in jail. Another mii can take the key to set ${m.name} free - or the crew can finish without them.`);
+  }
+
+  // An alerted mii the jailer is chasing drops everything and runs.
+  private startFlee(m: Member) {
+    if (m.crate) {
+      const c = this.crates.find((q) => q.id === m.crate);
+      if (c) {
+        if (m.state === "carrying") c.pos = { ...m.pos };
+        if (c.claimedBy === m.id) c.claimedBy = null;
+      }
+    }
+    if (m.plate) {
+      const p = this.plates.find((q) => q.id === m.plate);
+      if (p) { if (p.heldBy === m.id) p.heldBy = null; if (p.claimedBy === m.id) p.claimedBy = null; }
+    }
+    if (this.key) {
+      if (this.key.carriedBy === m.id) { this.key.pos = { ...m.pos }; this.key.carriedBy = null; }
+      if (this.key.claimedBy === m.id) this.key.claimedBy = null;
+    }
+    m.state = "fleeing"; m.path = []; m.crate = null; m.plate = null;
+    this.say(m.name, "runs from the jailer!", m);
+  }
+
+  // Blocked at the shut stone door: the next path step crosses the door edge
+  // while the door is closed.
+  private waitingAtShutDoor(m: Member): boolean {
+    if (this.doorOpen() || !m.path.length) return false;
+    const cx = Math.floor(m.pos.x), cy = Math.floor(m.pos.y);
+    const n = m.path[0];
+    return edgeIs(this.layout.door, cx, cy, Math.floor(n.x), Math.floor(n.y));
   }
 
   private failBudget() {
@@ -882,9 +1314,27 @@ export class Maze {
     if (this.controller?.budgetExhausted?.()) { this.failBudget(); return; }
     for (const m of this.members) {
       const holding = m.state === "holding" || m.state === "toPlate";
-      if (!this.free(m) && !holding) continue;
+      if (!this.free(m) && !holding) {
+        // stuck mid-errand at a shut door while a plate is unmanned (e.g. the
+        // holder was jailed): drop the errand and go hold a plate instead
+        if (!this.controller && (m.state === "fetching" || m.state === "carrying" || m.state === "toKey" || m.state === "toJail")
+            && this.waitingAtShutDoor(m)
+            && this.plates.some((p) => !p.heldBy && !p.claimedBy
+              && this.bfsPath(m.id, m.pos, center(p.pos), { movement: true }) !== null)) {
+          const c = this.crates.find((q) => q.id === m.crate);
+          if (c) {
+            if (m.state === "carrying") c.pos = { ...m.pos };
+            if (c.claimedBy === m.id) c.claimedBy = null;
+          }
+          if (this.key && this.key.carriedBy === m.id) { this.key.pos = { ...m.pos }; this.key.carriedBy = null; }
+          if (this.key && this.key.claimedBy === m.id) this.key.claimedBy = null;
+          m.crate = null; m.state = "idle";
+          this.builtin(m);
+        }
+        continue;
+      }
       if (!this.controller) {
-        if (!holding) this.builtin(m); // built-in holders never leave early
+        this.builtin(m); // built-in holders never leave early
         continue;
       }
       const out = this.controller.decide(this.decisionViewFor(m.id));
@@ -900,8 +1350,8 @@ export class Maze {
 
   // Advance a member along its path; returns true when the path is done.
   // Stops at the first edge that is not currently open (shut or blocked door).
-  private step(m: Member, dt: number): boolean {
-    let budget = BASE_SPEED * this.speed * dt;
+  private step(m: Member, dt: number, speedMult = 1): boolean {
+    let budget = BASE_SPEED * speedMult * this.speed * dt;
     while (budget > 0 && m.path.length) {
       const next = m.path[0];
       const cx = Math.floor(m.pos.x), cy = Math.floor(m.pos.y);
@@ -923,7 +1373,7 @@ export class Maze {
     m.repathT -= dt * this.speed;
     if (m.repathT > 0 || m.path.length) return;
     m.repathT = REPATH_EVERY;
-    const path = this.pathFor(m.id, m.pos, goal);
+    const path = this.pathForMember(m, goal);
     if (path && path.length) {
       m.path = path;
     } else if (!path) {
@@ -940,11 +1390,15 @@ export class Maze {
   private complete() {
     this.status = "complete";
     for (const m of this.members) {
+      if (m.state === "jailed") { m.path = []; continue; } // left behind - the crew finished without freeing them
       const p = m.plate ? this.plates.find((q) => q.id === m.plate) : null;
       if (p) { if (p.heldBy === m.id) p.heldBy = null; if (p.claimedBy === m.id) p.claimedBy = null; }
       m.state = "celebrating"; m.path = []; m.crate = null; m.plate = null;
     }
-    this.say("Puzzle", "All supplies delivered - the crew did it!");
+    const captive = this.captive();
+    this.say("Puzzle", captive
+      ? `All supplies delivered - the crew did it! ${captive.name} is still in jail.`
+      : "All supplies delivered - the crew did it!");
   }
 
   tick(dt: number) {
@@ -960,6 +1414,11 @@ export class Maze {
     if (this.status !== "running") return; // dispatch may have failed the run
 
     for (const m of this.members) {
+      // once the crew knows about the jailer, a chased mii drops everything and runs
+      if (this.jailerAlert && this.jailer.active && this.jailer.targetId === m.id
+          && m.state !== "fleeing" && m.state !== "jailed" && m.state !== "celebrating") {
+        this.startFlee(m);
+      }
       switch (m.state) {
         case "idle": {
           m.wanderT -= dt * this.speed;
@@ -991,6 +1450,15 @@ export class Maze {
           break;
         }
         case "toPlate": {
+          // plates are camp-side: waiting at a shut door means the plate is
+          // unreachable - release the claim so a camp-side mii can take it
+          if (this.waitingAtShutDoor(m)) {
+            const p = this.plates.find((q) => q.id === m.plate);
+            if (p && p.claimedBy === m.id) p.claimedBy = null;
+            m.plate = null; m.path = []; m.state = "idle";
+            this.say(m.name, "can't reach the plate while the door is shut.", m);
+            break;
+          }
           if (this.step(m, dt) || dist(m.pos, center(this.plates.find((p) => p.id === m.plate)!.pos)) < PLATE_DIST) {
             const p = this.plates.find((q) => q.id === m.plate)!;
             p.heldBy = m.id; p.claimedBy = null;
@@ -1035,9 +1503,75 @@ export class Maze {
           }
           break;
         }
+        case "fleeing": {
+          const j = this.jailer;
+          if (!j.active || j.targetId !== m.id) { m.state = "idle"; break; }
+          // bolt down the corridor that takes it furthest from the jailer
+          const cx = Math.floor(m.pos.x), cy = Math.floor(m.pos.y);
+          let bestNext: Vec | null = null;
+          let bestD = dist(m.pos, j.pos);
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            const nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
+            if (!this.edgeOpen(m.id, cx, cy, nx, ny)) continue;
+            const d = dist(center({ x: nx, y: ny }), j.pos);
+            if (d > bestD) { bestD = d; bestNext = center({ x: nx, y: ny }); }
+          }
+          if (bestNext) { m.path = [bestNext]; this.step(m, dt, FLEE_SPEED_MULT); }
+          break;
+        }
+        case "toKey": {
+          if (!this.key) { m.state = "idle"; break; }
+          if (this.waitingAtShutDoor(m)) {
+            if (this.key.claimedBy === m.id) this.key.claimedBy = null;
+            m.path = []; m.state = "idle";
+            this.say(m.name, "can't reach the jail key while the door is shut.", m);
+            break;
+          }
+          const arrived = this.step(m, dt);
+          if (arrived || dist(m.pos, this.key.pos) < PICKUP_DIST) {
+            this.key.carriedBy = m.id; this.key.claimedBy = null;
+            m.state = "toJail";
+            m.path = this.pathForMember(m, center(this.layout.jail)) ?? [];
+            m.repathT = 0;
+            this.say(m.name, "grabbed the jail key - heading to the jail.", m);
+          } else if (!m.path.length) {
+            this.repathIfWaiting(m, dt, this.key.pos);
+          }
+          break;
+        }
+        case "toJail": {
+          if (this.key && this.key.carriedBy === m.id) this.key.pos = { ...m.pos };
+          const arrived = this.step(m, dt);
+          if (arrived || dist(m.pos, center(this.layout.jail)) < DELIVER_DIST) {
+            const captive = this.captive();
+            this.key = null;
+            m.state = "idle";
+            if (captive) {
+              captive.state = "idle";
+              this.rescues.push({ by: m.id, name: m.name, freed: captive.name, t: this.elapsed });
+              this.say(m.name, `unlocked the jail - ${captive.name} is free!`, m);
+              this.jailer.active = true;
+              // respawn far from the crew, not beside the rescue it just lost -
+              // and re-post there so it patrols the far corner instead of
+              // walking straight back through the crew's corridors
+              this.jailer.pos = center(this.respawnSpot());
+              this.jailer.post = { ...this.jailer.pos };
+              this.jailer.path = []; this.jailer.targetId = null; this.jailer.wanderT = 1.5;
+              this.say("Puzzle", "The jailer is back on patrol, far from the crew.");
+            }
+          } else if (!m.path.length) {
+            this.repathIfWaiting(m, dt, center(this.layout.jail));
+          }
+          break;
+        }
+        case "jailed": break;
         case "celebrating": break;
       }
     }
+
+    // the jailer hunts after the crew has moved
+    this.jailerTick(dt);
 
     // door transitions land in the same tick that caused them
     const open = this.doorOpen();
@@ -1091,12 +1625,26 @@ export class Maze {
       delivered: this.deliveredCount(),
       total: this.totalCount(),
       sharingAllowed: this.sharingAllowed,
+      jail: { ...this.layout.jail },
+      jailer: {
+        active: this.jailer.active,
+        x: this.jailer.pos.x, y: this.jailer.pos.y,
+        chasing: this.jailer.targetId ? (this.member(this.jailer.targetId)?.name ?? null) : null,
+      },
+      key: this.key ? {
+        x: this.key.pos.x, y: this.key.pos.y,
+        claimedBy: this.key.claimedBy, carriedBy: this.key.carriedBy,
+      } : null,
+      captiveId: this.captive()?.id ?? null,
+      jailerAlert: this.jailerAlert,
       log: this.log.slice(-60),
       stats: {
         discoveries: [...this.discoveries],
         shares: this.shared ? [this.shared] : [],
         routeUpdates: [...this.routeUpdates],
         cacheDeliveredBy: this.cacheDeliveredBy,
+        captures: [...this.captures],
+        rescues: [...this.rescues],
       },
     };
   }

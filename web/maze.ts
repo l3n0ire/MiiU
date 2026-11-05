@@ -2,6 +2,9 @@
 // maze-engine.ts on a canvas. The "What happened" feed is shown by default -
 // door openings, plate hand-offs, discoveries and shares are the point of
 // this puzzle. Bubbles over miis are short template lines from the engine.
+// A jailer patrols the middle of the route: it chases miis it spots, drags
+// one to jail, vanishes, and leaves a key another mii can use to free them -
+// or the crew can finish without doing that.
 //
 // Crew control: by default the engine's built-in coordinator assigns two
 // plate-holders and sends the others fetching - code-driven cooperation that
@@ -458,6 +461,57 @@ function draw() {
     ctx.lineWidth = 1.5;
     ctx.strokeRect(px, py, 12, 10);
   });
+  // the jail: a barred camp-side cell, always visible
+  {
+    const jx = (s.jail.x + 0.5) * TILE, jy = (s.jail.y + 0.5) * TILE;
+    ctx.fillStyle = "rgba(45,42,38,0.18)";
+    ctx.fillRect(s.jail.x * TILE + 4, s.jail.y * TILE + 4, TILE - 8, TILE - 8);
+    ctx.strokeStyle = "#4a443c";
+    ctx.lineWidth = 3;
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath();
+      ctx.moveTo(jx + i * 9, jy - 14);
+      ctx.lineTo(jx + i * 9, jy + 14);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(45,42,38,0.7)";
+    ctx.font = "8px ui-rounded, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("jail", jx, jy + 22);
+  }
+  // the jail key (it rides along with its carrier)
+  if (s.key) {
+    const kx = s.key.x * TILE, ky = s.key.y * TILE;
+    ctx.strokeStyle = "#8a5a30";
+    ctx.fillStyle = "#f2b134";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(kx - 4, ky - 4, 4.5, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(kx - 1, ky - 1); ctx.lineTo(kx + 7, ky + 7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(kx + 4, ky + 4); ctx.lineTo(kx + 7, ky + 1); ctx.stroke();
+    if (!s.key.carriedBy) {
+      ctx.fillStyle = "rgba(45,42,38,0.7)";
+      ctx.font = "8px ui-rounded, system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("key", kx, ky + 18);
+    }
+  }
+  // the jailer (gone while a captive sits in jail)
+  if (s.jailer.active) {
+    const jx = s.jailer.x * TILE, jy = s.jailer.y * TILE;
+    ctx.fillStyle = s.jailer.chasing ? "#b3261e" : "#2d2a26";
+    ctx.beginPath(); ctx.arc(jx, jy - 4, 11, 0, 7); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.3)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 11px ui-rounded, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("J", jx, jy - 1);
+    ctx.fillStyle = s.jailer.chasing ? "#b3261e" : "rgba(45,42,38,0.85)";
+    ctx.font = "10px ui-rounded, system-ui, sans-serif";
+    const jw = ctx.measureText("jailer").width;
+    ctx.fillText(s.jailer.chasing ? "jailer - CHASING" : "jailer", jx, labelY(jx, jy + 16, jw + 40, 11));
+  }
   // members
   for (const m of s.members) {
     // faint dotted route so route changes are visible
@@ -498,6 +552,8 @@ function draw() {
       scouting: "scouting the walls", fetching: "fetching a crate",
       carrying: "carrying home", toPlate: "going to a plate",
       holding: "HOLDING a plate", celebrating: "",
+      jailed: "IN JAIL", fleeing: "running from the jailer!",
+      toKey: "getting the jail key", toJail: "freeing a captive",
     };
     const label = labels[m.state];
     if (label) {
@@ -541,7 +597,10 @@ function draw() {
         : `${found} found the hidden crack and kept it private - only ${found} could reach the cache.`
       : "Nobody found a hidden crack this run.";
     const cache = s.stats.cacheDeliveredBy ? ` ${s.stats.cacheDeliveredBy} brought home the golden cache crate!` : "";
-    $("winStats").textContent = `Done in ${Math.round(s.elapsed)}s of island time - ${s.delivered}/${s.total} crates${minds ? `, ${minds.stats().calls} model calls` : ""} (sharing ${s.sharingAllowed ? "on" : "off"}). ${knowledge}${cache}`;
+    const caught = s.stats.captures.length
+      ? ` The jailer caught ${s.stats.captures.map((c) => c.name).join(", ")}${s.stats.rescues.length ? `; ${s.stats.rescues.map((r) => `${r.freed} freed by ${r.name}`).join(", ")}` : ""}${s.captiveId ? " - a captive was left behind" : ""}.`
+      : "";
+    $("winStats").textContent = `Done in ${Math.round(s.elapsed)}s of island time - ${s.delivered}/${s.total} crates${minds ? `, ${minds.stats().calls} model calls` : ""} (sharing ${s.sharingAllowed ? "on" : "off"}). ${knowledge}${cache}${caught}`;
     // Same-layout comparison with the previous completed run on this page.
     // Descriptive, not a controlled experiment - model choices are stochastic.
     const prev = $("prevStats");
@@ -577,8 +636,12 @@ function draw() {
 }
 
 function nowLine(s: ReturnType<Maze["snapshot"]>): string {
-  if (s.status === "complete") return "All four crates are home.";
+  if (s.status === "complete") return s.captiveId ? "All four crates are home - but a captive was left in jail." : "All four crates are home.";
   if (s.status === "failed") return "The agents failed to accomplish the task - the call budget ran out.";
+  const captive = s.members.find((m) => m.state === "jailed");
+  if (captive) return `${captive.name} is in jail - another mii can take the key to free them.`;
+  const fleeing = s.members.find((m) => m.state === "fleeing");
+  if (fleeing) return `${fleeing.name} is running from the jailer!`;
   const carrying = s.members.find((m) => m.state === "carrying");
   if (carrying) return `${carrying.name} is carrying a crate back to camp.`;
   const holders = s.members.filter((m) => m.state === "holding");

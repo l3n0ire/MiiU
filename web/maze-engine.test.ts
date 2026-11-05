@@ -78,6 +78,7 @@ test("layout: solvability-checked, split by the door, plates near it, crates sea
 test("door physics: shut until BOTH plates are held, shuts again on release", () => {
   const p = new Maze(CREW, 7);
   p.setController(WAITER);
+  p.jailer.active = false; // door physics only: no interruptions
   const [a, b] = p.members;
   assert.equal(p.doorOpen(), false);
   const l = p.layout;
@@ -109,6 +110,7 @@ test("door physics: shut until BOTH plates are held, shuts again on release", ()
 test("a carrier mid-trip waits at the shut door and continues when it reopens", () => {
   const p = new Maze(CREW, 7);
   p.setController(WAITER);
+  p.jailer.active = false; // door queueing only: no interruptions
   const [a, b, c] = p.members;
   // holders in place
   p.applyDecision(a.id, { action: "hold", plate: "plate-0", reason: "" });
@@ -304,4 +306,224 @@ test("shared board: cache activity is visible only to crack-knowers until a shar
   assert.ok(p2.applyDecision("a", { action: "fetch", crate: "cache-0", reason: "" }).ok);
   assert.ok(p2.decisionViewFor("b").announcements.join("\n").includes("cache-0"),
     "after a share the cache line is public");
+});
+
+// ---- the jailer ----
+
+// A cell a few steps down a straight carved corridor from a position (the
+// jailer's line of sight runs along corridors).
+function lineSpot(p: Maze, from: { x: number; y: number }, maxSteps: number): { x: number; y: number } | null {
+  const carved = new Set(p.layout.carved);
+  const ek = (ax: number, ay: number, bx: number, by: number) =>
+    ax < bx || (ax === bx && ay <= by) ? `${ax},${ay}|${bx},${by}` : `${bx},${by}|${ax},${ay}`;
+  const fc = { x: Math.floor(from.x), y: Math.floor(from.y) };
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    let x = fc.x, y = fc.y;
+    for (let i = 0; i < maxSteps; i++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H || !carved.has(ek(x, y, nx, ny))) break;
+      x = nx; y = ny;
+    }
+    if (x !== fc.x || y !== fc.y) return { x, y };
+  }
+  return null;
+}
+
+test("layout: the jail is a camp-side dead end and the post sits mid completion path", () => {
+  for (let seed = 1; seed <= 60; seed++) {
+    const l = generateMazeLayout(seed);
+    assert.ok(l.jail && l.jailerPost, `seed ${seed} has a jail and a jailer post`);
+    // the jail is reachable on the camp side with the door shut
+    const shut = new Set(l.carved.filter((k) => {
+      const [a, b] = k.split("|");
+      return !(a === `${l.door.ax},${l.door.ay}` && b === `${l.door.bx},${l.door.by}`);
+    }));
+    const reach = new Set<string>([l.camp.x + "," + l.camp.y]);
+    const q = [l.camp];
+    while (q.length) {
+      const c = q.shift()!;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = c.x + dx, ny = c.y + dy;
+        if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
+        const nk = nx + "," + ny;
+        const ek = c.x < nx || (c.x === nx && c.y <= ny) ? `${c.x},${c.y}|${nx},${ny}` : `${nx},${ny}|${c.x},${c.y}`;
+        if (reach.has(nk) || !shut.has(ek)) continue;
+        reach.add(nk); q.push({ x: nx, y: ny });
+      }
+    }
+    assert.ok(reach.has(l.jail.x + "," + l.jail.y), `seed ${seed} jail reachable on the camp side`);
+    assert.ok(!(l.jail.x === l.camp.x && l.jail.y === l.camp.y), `seed ${seed} jail is not the camp`);
+    // the post is on the camp-to-farthest-crate route (the completion path)
+    const open = new Set(l.carved);
+    const prev = new Map<string, string>();
+    const dDoor = new Map<string, number>();
+    {
+      const dq = [{ x: l.door.bx, y: l.door.by }];
+      dDoor.set(l.door.bx + "," + l.door.by, 0);
+      while (dq.length) {
+        const c = dq.shift()!;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          const nx = c.x + dx, ny = c.y + dy;
+          if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
+          const nk = nx + "," + ny;
+          const ek = c.x < nx || (c.x === nx && c.y <= ny) ? `${c.x},${c.y}|${nx},${ny}` : `${nx},${ny}|${c.x},${c.y}`;
+          if (dDoor.has(nk) || !open.has(ek)) continue;
+          dDoor.set(nk, dDoor.get(c.x + "," + c.y)! + 1); dq.push({ x: nx, y: ny });
+        }
+      }
+    }
+    const far = l.crates.reduce((a, b) =>
+      (dDoor.get(b.home.x + "," + b.home.y) ?? 0) >= (dDoor.get(a.home.x + "," + a.home.y) ?? 0) ? b : a);
+    const qq = [{ x: l.camp.x, y: l.camp.y }];
+    const seen = new Set([l.camp.x + "," + l.camp.y]);
+    const route: string[] = [];
+    while (qq.length) {
+      const c = qq.shift()!;
+      if (c.x === far.home.x && c.y === far.home.y) {
+        let k = c.x + "," + c.y;
+        while (k !== l.camp.x + "," + l.camp.y) { route.unshift(k); k = prev.get(k)!; }
+        break;
+      }
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = c.x + dx, ny = c.y + dy;
+        if (nx < 0 || ny < 0 || nx >= MAZE_W || ny >= MAZE_H) continue;
+        const nk = nx + "," + ny;
+        const ek = c.x < nx || (c.x === nx && c.y <= ny) ? `${c.x},${c.y}|${nx},${ny}` : `${nx},${ny}|${c.x},${c.y}`;
+        if (seen.has(nk) || !open.has(ek)) continue;
+        seen.add(nk); prev.set(nk, c.x + "," + c.y); qq.push({ x: nx, y: ny });
+      }
+    }
+    assert.ok(route.includes(l.jailerPost.x + "," + l.jailerPost.y), `seed ${seed} post on the completion path`);
+  }
+});
+
+test("jailer: wanders near its post while nobody is in sight", () => {
+  const p = new Maze(CREW, 7);
+  p.setController(WAITER);
+  for (const m of p.members) {
+    m.wanderT = 9999;
+    m.pos = { x: p.layout.camp.x + 0.5, y: p.layout.camp.y + 0.5 }; // out of sight at camp
+  }
+  const post = p.jailer.post;
+  let moved = 0;
+  for (let t = 0; t < 90; t += 0.05) {
+    p.tick(0.05);
+    moved = Math.max(moved, Math.hypot(p.jailer.pos.x - post.x, p.jailer.pos.y - post.y));
+    // wander TARGETS sit within a small radius of the post; in a perfect maze
+    // the path between two nearby cells can wind, so allow corridor detours
+    assert.ok(
+      Math.hypot(p.jailer.pos.x - post.x, p.jailer.pos.y - post.y) <= 10,
+      `jailer stays near its post (drifted to ${p.jailer.pos.x.toFixed(1)},${p.jailer.pos.y.toFixed(1)} from ${post.x},${post.y})`,
+    );
+  }
+  assert.ok(moved > 0.5, "the jailer actually wanders");
+});
+
+test("jailer: chases a mii in its line of sight, jails it, despawns and leaves a reachable key", () => {
+  const p = new Maze(CREW, 7);
+  p.setController(WAITER);
+  const a = p.members[0];
+  a.wanderT = 9999;
+  const spot = lineSpot(p, p.jailer.pos, 3)!;
+  a.pos = { x: spot.x + 0.5, y: spot.y + 0.5 };
+  let t = 0;
+  while (t < 40 && a.state !== "jailed") { p.tick(0.05); t += 0.05; }
+  assert.equal(a.state, "jailed", "the mii in sight is caught");
+  assert.equal(p.jailer.active, false, "the jailer despawns on a capture");
+  assert.equal(a.pos.x, p.layout.jail.x + 0.5);
+  assert.equal(a.pos.y, p.layout.jail.y + 0.5);
+  assert.ok(p.log.some((l) => l.text.includes("was caught by the jailer")), "the feed reports the capture");
+  assert.ok(p.key, "a jail key appears");
+  const backHome = p.pathFor(null, p.key!.pos, { x: p.layout.camp.x + 0.5, y: p.layout.camp.y + 0.5 });
+  assert.ok(backHome, "the key is reachable");
+  // one captive at a time: nobody else is hunted while the jailer is gone
+  const b = p.members[1];
+  b.wanderT = 9999;
+  b.pos = { x: p.jailer.pos.x, y: p.jailer.pos.y };
+  for (let t2 = 0; t2 < 5; t2 += 0.05) p.tick(0.05);
+  assert.notEqual(b.state, "jailed", "no second capture while a captive sits in jail");
+});
+
+test("jailer: a freed captive brings the jailer back, and the crew then avoids it", () => {
+  const p = new Maze(CREW, 7);
+  p.setController(WAITER);
+  const [a, b] = p.members;
+  a.wanderT = 9999;
+  const spot = lineSpot(p, p.jailer.pos, 3)!;
+  a.pos = { x: spot.x + 0.5, y: spot.y + 0.5 };
+  let t = 0;
+  while (t < 40 && a.state !== "jailed") { p.tick(0.05); t += 0.05; }
+  assert.equal(a.state, "jailed");
+  // a crewmate fetches the key and frees the captive
+  const r = p.applyDecision(b.id, { action: "rescue", reason: "freeing" });
+  assert.ok(r.ok, r.why);
+  t = 0;
+  while (t < 300 && a.state === "jailed") { p.tick(0.05); t += 0.05; }
+  assert.notEqual(a.state, "jailed", "the captive is freed");
+  assert.equal(p.key, null, "the key is used up");
+  assert.equal(p.jailer.active, true, "the jailer respawns");
+  // respawns far from the crew and re-posts there instead of returning to
+  // the middle beside the rescue
+  const spot2r = p.respawnSpot();
+  assert.ok(Math.hypot(p.jailer.pos.x - (spot2r.x + 0.5), p.jailer.pos.y - (spot2r.y + 0.5)) < 1, "respawns at the farthest reachable cell from the crew and its remaining work");
+  assert.ok(Math.hypot(p.jailer.pos.x - p.jailer.post.x, p.jailer.pos.y - p.jailer.post.y) < 1, "re-posts at the far respawn cell");
+  assert.ok(Math.hypot(p.jailer.post.x - p.layout.jailerPost.x, p.jailer.post.y - p.layout.jailerPost.y) >= 4, "the new post is far from the original midpoint post");
+  assert.ok(p.log.some((l) => l.text.includes("far from the crew")), "the feed reports the far respawn");
+  // now the crew knows: a chased mii drops everything and runs
+  b.wanderT = 9999;
+  b.state = "idle" as typeof b.state; b.path = [];
+  const spot2 = lineSpot(p, p.jailer.pos, 3)!;
+  b.pos = { x: spot2.x + 0.5, y: spot2.y + 0.5 };
+  let fled = false;
+  t = 0;
+  while (t < 40 && b.state !== "jailed" && !fled) {
+    p.tick(0.05); t += 0.05;
+    if (b.state === "fleeing") fled = true;
+  }
+  assert.ok(fled, "after the first capture a chased mii flees");
+});
+
+test("jailer: the built-in crew completes the maze without freeing a captive", () => {
+  const p = new Maze(CREW, 7);
+  const a = p.members[0];
+  // jail someone immediately and throw the key away: no rescue is possible
+  a.wanderT = 9999;
+  const spot = lineSpot(p, p.jailer.pos, 3)!;
+  a.pos = { x: spot.x + 0.5, y: spot.y + 0.5 };
+  let t = 0;
+  while (t < 40 && a.state !== "jailed") { p.tick(0.05); t += 0.05; }
+  assert.equal(a.state, "jailed");
+  p.key = null;
+  run(p);
+  assert.equal(p.status, "complete", "the crew finishes with a captive in jail");
+  assert.equal(p.snapshot().captiveId, a.id, "the captive was left behind");
+});
+
+test("jailer: a holder-capture never deadlocks the door (regression: seeds 237, 351, 355, 576, 630, 798)", () => {
+  // the jailer can catch a plate holder while every other free mii is
+  // warrens-side: a camp-side crewmate must release a plate, fetch the
+  // camp-side key and free the captive so the plates can be manned again
+  for (const seed of [237, 351, 355, 576, 630, 798]) {
+    const p = new Maze(CREW, seed);
+    const t = run(p, 2400);
+    assert.equal(p.status, "complete", `seed ${seed} deadlocked at ${t}s with ${p.deliveredCount()}/4 (${p.failureReason ?? ""})`);
+  }
+});
+
+test("jailer: rescue requires a captive and a free key", () => {
+  const p = new Maze(CREW, 7);
+  p.setController(WAITER);
+  const [a, b, c] = p.members;
+  let r = p.applyDecision(b.id, { action: "rescue", reason: "nobody is jailed" });
+  assert.equal(r.ok, false, "no captive - nothing to rescue");
+  a.wanderT = 9999;
+  const spot = lineSpot(p, p.jailer.pos, 3)!;
+  a.pos = { x: spot.x + 0.5, y: spot.y + 0.5 };
+  let t = 0;
+  while (t < 40 && a.state !== "jailed") { p.tick(0.05); t += 0.05; }
+  assert.equal(a.state, "jailed");
+  r = p.applyDecision(b.id, { action: "rescue", reason: "freeing" });
+  assert.ok(r.ok, r.why);
+  r = p.applyDecision(c.id, { action: "rescue", reason: "also freeing" });
+  assert.equal(r.ok, false, "one rescuer claims the key");
 });
