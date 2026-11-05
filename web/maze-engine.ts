@@ -48,7 +48,10 @@
 // runs at it. On contact the mii is dragged to the jail (a camp-side dead
 // end), the jailer vanishes, and a jail key appears somewhere on the map.
 // Another mii can fetch the key and free the captive - then the jailer
-// respawns at its post. One captive at a time (it is gone while someone is
+// respawns far from the crew (the reachable cell with the greatest minimum
+// path distance to any free mii) and re-posts there, patrolling that far
+// corner instead of returning to the middle next to the rescue. One captive
+// at a time (it is gone while someone is
 // jailed). The crew can still finish without freeing anyone. After the FIRST
 // capture every mii knows to avoid the jailer: they route around it when they
 // can and run from it when it chases.
@@ -126,7 +129,7 @@ export interface MazeLayout {
   cache: { id: string; home: Vec } | null;
   chamber: Vec | null; // the sealed cache room cell
   jail: Vec; // the jail cell: a camp-side dead end
-  jailerPost: Vec; // where the jailer starts and respawns: mid completion path
+  jailerPost: Vec; // where the jailer starts: mid completion path (after a rescue it re-posts far from the crew)
 }
 
 export interface JailerState {
@@ -1176,6 +1179,38 @@ export class Maze {
     }
   }
 
+  // Where the jailer reappears after a rescue: the reachable cell with the
+  // greatest minimum path distance to everything the crew still cares about -
+  // every free mii (the just-freed captive included), every undelivered
+  // crate, every unmanned plate, the camp and the door - so it reappears far
+  // from the crew and far from the routes it must still run, instead of
+  // popping back in next to the rescue or camping the fetch corridor.
+  // Deterministic: max min-distance, then cell order. A spot whose region is
+  // still sealed off contributes no constraint (its distance map does not
+  // reach the crew's side).
+  respawnSpot(): Vec {
+    const free = this.members.filter((m) => m.state !== "jailed");
+    const spots: Vec[] = free.map((m) => ({ x: Math.floor(m.pos.x), y: Math.floor(m.pos.y) }));
+    for (const c of this.crates) if (!c.delivered) spots.push({ x: Math.floor(c.pos.x), y: Math.floor(c.pos.y) });
+    for (const pl of this.plates) if (!pl.heldBy) spots.push({ x: Math.floor(pl.pos.x), y: Math.floor(pl.pos.y) });
+    spots.push({ x: Math.floor(this.layout.camp.x), y: Math.floor(this.layout.camp.y) });
+    spots.push({ x: this.layout.door.ax, y: this.layout.door.ay });
+    const maps = spots
+      .map((sp) => bfs(this.carvedSet, sp))
+      .filter((mp) => mp.size > this.carvedSet.size / 2);
+    const fallback = { x: Math.floor(this.jailer.post.x), y: Math.floor(this.jailer.post.y) };
+    let best: Vec = fallback, bestD = -1;
+    const cells = new Set<string>();
+    for (const mp of maps) for (const k of mp.keys()) cells.add(k);
+    for (const k of cells) {
+      let d = Infinity;
+      for (const mp of maps) d = Math.min(d, mp.get(k) ?? Infinity);
+      const [x, y] = k.split(",").map(Number);
+      if (d > bestD || (d === bestD && (x < best.x || (x === best.x && y < best.y)))) { bestD = d; best = { x, y }; }
+    }
+    return bestD >= 0 ? best : fallback;
+  }
+
   // A random reachable cell for the jail key, on the CAMP side of the door
   // (except the camp, the jail, the door cells, the plates and live crates):
   // the captive is jailed on the camp side, so the key must be reachable
@@ -1517,9 +1552,13 @@ export class Maze {
               this.rescues.push({ by: m.id, name: m.name, freed: captive.name, t: this.elapsed });
               this.say(m.name, `unlocked the jail - ${captive.name} is free!`, m);
               this.jailer.active = true;
-              this.jailer.pos = { ...this.jailer.post };
+              // respawn far from the crew, not beside the rescue it just lost -
+              // and re-post there so it patrols the far corner instead of
+              // walking straight back through the crew's corridors
+              this.jailer.pos = center(this.respawnSpot());
+              this.jailer.post = { ...this.jailer.pos };
               this.jailer.path = []; this.jailer.targetId = null; this.jailer.wanderT = 1.5;
-              this.say("Puzzle", "The jailer is back on patrol near the middle of the maze.");
+              this.say("Puzzle", "The jailer is back on patrol, far from the crew.");
             }
           } else if (!m.path.length) {
             this.repathIfWaiting(m, dt, center(this.layout.jail));
