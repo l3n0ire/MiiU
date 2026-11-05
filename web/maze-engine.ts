@@ -1609,4 +1609,4 @@ export class Maze {
       },
     };
   }
-                                                   }
+}
