@@ -62,7 +62,7 @@ interface SavedSetup {
   model?: string;
   rememberKey?: boolean;
 }
-interface MazeOptions { sharing: boolean; maxCalls: number }
+interface MazeOptions { sharing: boolean; maxCalls: number; timeoutSec: number }
 
 let minds: MazeMinds | null = null;
 let sessionKey: string | null = null;
@@ -73,10 +73,14 @@ function loadMazeOptions(): MazeOptions {
     const raw = localStorage.getItem(MAZE_KEY);
     if (raw) {
       const o = JSON.parse(raw) as Partial<MazeOptions>;
-      return { sharing: o.sharing !== false, maxCalls: Math.max(10, Math.min(200, o.maxCalls ?? 60)) };
+      return {
+        sharing: o.sharing !== false,
+        maxCalls: Math.max(10, Math.min(200, o.maxCalls ?? 60)),
+        timeoutSec: Math.max(10, Math.min(120, o.timeoutSec ?? 30)),
+      };
     }
   } catch { /* fall through */ }
-  return { sharing: true, maxCalls: 60 };
+  return { sharing: true, maxCalls: 60, timeoutSec: 30 };
 }
 function saveMazeOptions() { localStorage.setItem(MAZE_KEY, JSON.stringify(mazeOptions)); }
 
@@ -101,7 +105,7 @@ function attachMinds(setup: SavedSetup, key: string | null) {
       openaiApiKey: key ?? undefined,
       model: setup.model || undefined,
     });
-    minds = new MazeMinds(caller, { maxCalls: mazeOptions.maxCalls });
+    minds = new MazeMinds(caller, { maxCalls: mazeOptions.maxCalls, thinkingTimeoutMs: mazeOptions.timeoutSec * 1000 });
     puzzle.setController(minds);
   } catch (err) {
     console.error("Could not connect model:", err);
@@ -133,7 +137,7 @@ function renderCrewPanel() {
   const statuses = minds.statuses();
   const fallen = statuses.filter((s) => s.state === "fallback").length;
   driver.textContent = statuses.length > 0 && fallen === statuses.length
-    ? "Built-in logic - model unavailable for every mii"
+    ? "Built-in logic - model unavailable for every mii (still retrying)"
     : `Each mii decides for itself with ${minds.modelLabel}`;
   driver.textContent += mazeOptions.sharing ? " - sharing ON" : " - sharing OFF";
   const mockDriver = /mock/i.test(minds.modelLabel);
@@ -175,7 +179,8 @@ function showCrewSetup() {
     fetch a crate, hold a pressure plate (the stone door only opens while BOTH plates are held), release,
     scout the walls for a hidden crack - and if it finds one, <b>share it with the crew or keep it to
     itself</b>. What a mii knows is its own until it shares. They still walk and carry with the same rules.
-    If a mii's model times out or errors, that mii alone switches to built-in logic, named per character.
+    If a mii's model times out or errors, built-in logic covers that mii alone, named per character,
+    while its model retries - it is not stuck on built-in for the rest of the run.
     If the call budget runs out, the run <b>fails</b> and you can restart with a different limit.</p>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button type="button" id="crewProvOpenAI" style="flex:1">OpenAI key</button>
@@ -215,6 +220,10 @@ function showCrewSetup() {
     <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Each mii makes its own short calls when its situation
     changes. When the budget runs out the agents fail the task and you can restart with a different limit - the
     built-in logic does not silently finish it. These are call/token bounds, not a dollar cap.</p>
+    <label style="font-size:13px;color:#8a8278">Model answer timeout (seconds, per call)</label>
+    <input id="crewTimeout" type="number" min="10" max="120" step="5" style="width:90px;margin:4px 0" />
+    <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Give a slower local model more room to answer. A mii whose
+    call runs past this is covered by built-in logic while its model retries.</p>
     <div id="crewSetupError" style="color:#b3261e;font-size:13px;min-height:18px;margin-top:8px"></div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <button type="button" id="crewStart" style="flex:1;background:#ff7a59;border:none;color:#fff;padding:8px;border-radius:8px">Connect</button>
@@ -240,6 +249,7 @@ function showCrewSetup() {
   $c("#crewRemember").checked = Boolean(existing?.rememberKey && hasKey);
   $c("#crewSharing").checked = mazeOptions.sharing;
   $c("#crewBudget").value = String(mazeOptions.maxCalls);
+  $c("#crewTimeout").value = String(mazeOptions.timeoutSec);
   paint();
 
   const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
@@ -266,6 +276,7 @@ function showCrewSetup() {
     mazeOptions = {
       sharing: Boolean($c("#crewSharing").checked),
       maxCalls: Math.max(10, Math.min(200, Number($c("#crewBudget").value) || 60)),
+      timeoutSec: Math.max(10, Math.min(120, Number($c("#crewTimeout").value) || 30)),
     };
     saveMazeOptions();
   };
