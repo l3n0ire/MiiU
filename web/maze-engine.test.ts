@@ -462,7 +462,13 @@ test("jailer: a freed captive brings the jailer back, and the crew then avoids i
   assert.notEqual(a.state, "jailed", "the captive is freed");
   assert.equal(p.key, null, "the key is used up");
   assert.equal(p.jailer.active, true, "the jailer respawns");
-  assert.ok(Math.hypot(p.jailer.pos.x - p.jailer.post.x, p.jailer.pos.y - p.jailer.post.y) < 1, "back at its post");
+  // respawns far from the crew and re-posts there instead of returning to
+  // the middle beside the rescue
+  const spot2r = p.respawnSpot();
+  assert.ok(Math.hypot(p.jailer.pos.x - (spot2r.x + 0.5), p.jailer.pos.y - (spot2r.y + 0.5)) < 1, "respawns at the farthest reachable cell from the crew and its remaining work");
+  assert.ok(Math.hypot(p.jailer.pos.x - p.jailer.post.x, p.jailer.pos.y - p.jailer.post.y) < 1, "re-posts at the far respawn cell");
+  assert.ok(Math.hypot(p.jailer.post.x - p.layout.jailerPost.x, p.jailer.post.y - p.layout.jailerPost.y) >= 4, "the new post is far from the original midpoint post");
+  assert.ok(p.log.some((l) => l.text.includes("far from the crew")), "the feed reports the far respawn");
   // now the crew knows: a chased mii drops everything and runs
   b.wanderT = 9999;
   b.state = "idle" as typeof b.state; b.path = [];
