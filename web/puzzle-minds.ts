@@ -26,7 +26,8 @@
 // - A character whose model fails falls back ALONE (PartialReply builtinFor);
 //   the others keep their model drivers.
 // - Hard bounds: adjustable aggregate call budget per puzzle (default 40),
-//   30s per-call timeout, per-request output cap (server-enforced) and
+//   adjustable per-call timeout (default 30s, max 120s - llm-json aborts any
+//   single fetch there), per-request output cap (server-enforced) and
 //   prompt char cap. These are call/token bounds, not a dollar cap. Budget
 //   exhaustion is NOT a per-character failure: the run stops and the failure
 //   is surfaced with an option to restart with a different budget. Built-in
@@ -72,7 +73,10 @@ export interface BoardView {
 }
 export interface CollabEvent { at: number; text: string }
 
-const THINKING_TIMEOUT_MS = 30_000;
+const DEFAULT_THINKING_TIMEOUT_MS = 30_000;
+const MAX_THINKING_TIMEOUT_MS = 120_000; // llm-json aborts any single fetch at 120s
+const FAIL_RETRY_BASE_MS = 5_000; // first model retry after a failed call; doubles, capped
+const FAIL_RETRY_CAP_MS = 60_000;
 const CALL_COOLDOWN_MS = 1_500;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_OUTPUT_TOKENS = 2000;
@@ -123,6 +127,8 @@ class CharacterMind {
   private lastCallAt = 0;
   private lastSignature = "";
   private failed: string | null = null;
+  private failStreak = 0;
+  private retryAt = 0;
   private stalledByBudget = false;
   private rejectStreak = 0;
   // Bumped on timeout and on newPuzzle: a response that arrives AFTER its
@@ -140,6 +146,7 @@ class CharacterMind {
     private spendCall: () => boolean, // false when the puzzle budget is exhausted
     private now: () => number,
     private events: MindEvents,
+    private timeoutMs: number = DEFAULT_THINKING_TIMEOUT_MS,
   ) {}
 
   // Budget exhaustion is terminal for the run: void any held intention and
@@ -160,6 +167,8 @@ class CharacterMind {
     this.declinedNote = null;
     this.memory = [];
     this.failed = null;
+    this.failStreak = 0;
+    this.retryAt = 0;
     this.stalledByBudget = false;
     this.lastSignature = "";
     this.lastReason = null;
@@ -182,7 +191,7 @@ class CharacterMind {
   memoryLines(): string[] { return [...this.memory]; }
 
   detail(): string {
-    if (this.failed) return `built-in (${this.failed})`;
+    if (this.failed) return `built-in (${this.failed}; the model keeps retrying)`;
     if (this.stalledByBudget) return "out of model calls (budget used up)";
     if (this.inFlight && !this.committed) return "thinking…";
     if (this.committed) return this.lastReason ?? "decided";
@@ -203,14 +212,15 @@ class CharacterMind {
   // Called every dispatch tick with this character's perspective. Only starts
   // a model call when something it cares about actually changed.
   consider(signature: string, prompt: string, system: string) {
-    if (this.failed) return;
-    if (this.inFlight && this.now() - this.thinkingSince > THINKING_TIMEOUT_MS) {
+    if (this.inFlight && this.now() - this.thinkingSince > this.timeoutMs) {
       this.inFlight = false;
-      this.failed = "no answer after 30s";
+      this.noteFailure(`no answer after ${Math.round(this.timeoutMs / 1000)}s`);
       this.generation++; // the late reply, if it ever arrives, is stale now
       return;
     }
-    if (signature === this.lastSignature || this.inFlight) return;
+    if (this.inFlight) return;
+    if (this.failed && this.now() < this.retryAt) return; // backing off before the retry
+    if (!this.failed && signature === this.lastSignature) return;
     const cooldown = CALL_COOLDOWN_MS * 2 ** Math.min(this.rejectStreak, 4);
     if (this.now() - this.lastCallAt < cooldown) return;
     if (!this.spendCall()) {
@@ -234,13 +244,24 @@ class CharacterMind {
         system, temperature: 0.4, maxOutputTokens: MAX_OUTPUT_TOKENS,
       });
       if (gen !== this.generation) return; // stale: timed out or puzzle reset
+      this.failed = null; // the model answered again: it takes back over
+      this.failStreak = 0;
+      this.retryAt = 0;
       this.onReply(reply);
     } catch (err) {
       if (gen !== this.generation) return;
-      this.failed = err instanceof Error ? err.message.slice(0, 120) : "request failed";
+      this.noteFailure(err instanceof Error ? err.message.slice(0, 120) : "request failed");
     } finally {
       if (gen === this.generation) this.inFlight = false;
     }
+  }
+
+  // A slow or failed call is a lapse, not a demotion: built-in logic covers
+  // the character (the panel says why) while the model retries with backoff.
+  private noteFailure(reason: string) {
+    this.failed = reason;
+    this.failStreak++;
+    this.retryAt = this.now() + Math.min(FAIL_RETRY_BASE_MS * 2 ** Math.min(this.failStreak - 1, 4), FAIL_RETRY_CAP_MS);
   }
 
   private onReply(reply: MoveReply) {
@@ -308,10 +329,14 @@ export class MindfulCrew implements CrewController {
     private now: () => number = () => Date.now(),
     private scenario: MindScenario = BRIDGE_SCENARIO,
     maxCallsPerPuzzle: number = DEFAULT_MAX_CALLS_PER_PUZZLE,
+    thinkingTimeoutMs: number = DEFAULT_THINKING_TIMEOUT_MS,
   ) {
     this.modelLabel = `${caller.model} (${caller.provider === "openai" ? "OpenAI" : "Ollama"})`;
     this.maxCalls = normalizeBudget(maxCallsPerPuzzle);
+    this.thinkingTimeoutMs = Math.min(Math.max(thinkingTimeoutMs, 10_000), MAX_THINKING_TIMEOUT_MS);
   }
+
+  private readonly thinkingTimeoutMs: number;
 
   newPuzzle() {
     this.calls = 0;
@@ -364,7 +389,7 @@ export class MindfulCrew implements CrewController {
 
   private mindFor(id: string, name: string): CharacterMind {
     let m = this.minds.get(id);
-    if (!m) { m = new CharacterMind(id, name, this.caller, this.spendCall, this.now, { onDecline: this.onDecline }); this.minds.set(id, m); }
+    if (!m) { m = new CharacterMind(id, name, this.caller, this.spendCall, this.now, { onDecline: this.onDecline }, this.thinkingTimeoutMs); this.minds.set(id, m); }
     return m;
   }
 
@@ -449,7 +474,8 @@ export class MindfulCrew implements CrewController {
     for (const mem of view.members) {
       const mind = this.mindFor(mem.id, mem.name);
       if (!mem.free) { continue; }
-      if (mind.unusable) continue;
+      // a failed mind still reconsiders here: consider() backs off, retries,
+      // and clears its failure when the model answers again
       // Holding a still-viable intention is a decision too: no new call while
       // the piece is still open / the ask is still unanswered.
       if (mind.committed && commitmentViable(mind.committed, view, board)) continue;
