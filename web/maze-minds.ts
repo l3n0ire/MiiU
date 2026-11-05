@@ -45,7 +45,7 @@ const MOVE_SCHEMA = {
   properties: {
     action: {
       type: "string",
-      description: 'Choose only an action offered in your prompt. "fetch" = go get a crate and bring it to camp; "hold" = go stand on a pressure plate and keep it held; "release" = step off the plate you are holding; "scout" = search the walls for a hidden crack; "share" = tell the crew about a crack YOU found, only when sharing is enabled; "wait" = stay as you are',
+      description: 'Choose only an action offered in your prompt. "fetch" = go get a crate and bring it to camp; "hold" = go stand on a pressure plate and keep it held; "release" = step off the plate you are holding; "scout" = search the walls for a hidden crack; "share" = tell the crew about a crack YOU found, only when sharing is enabled; "rescue" = fetch the jail key and free the captive, only when someone is jailed and the key is free; "wait" = stay as you are',
     },
     crate: { type: "string", description: 'crate id exactly as listed, e.g. crate-0; only for fetch, empty otherwise' },
     plate: { type: "string", description: 'plate id exactly as listed, e.g. plate-0; only for hold, empty otherwise' },
@@ -160,7 +160,7 @@ class MazeMind {
 
   private onReply(reply: MoveReply) {
     const action = reply.action === "fetch" || reply.action === "hold" || reply.action === "release"
-      || reply.action === "scout" || reply.action === "share" ? reply.action : null;
+      || reply.action === "scout" || reply.action === "share" || reply.action === "rescue" ? reply.action : null;
     const crate = normalizeRef(reply.crate, "crate");
     const plate = normalizeRef(reply.plate, "plate");
     const reason = String(reply.reason ?? "").trim().slice(0, 140);
@@ -251,6 +251,7 @@ export class MazeMinds implements MazeController {
       : d.action === "release" ? "stepped off the plate"
       : d.action === "scout" ? "went scouting the walls"
       : d.action === "share" ? "shared the hidden crack with the crew"
+      : d.action === "rescue" ? "went for the jail key"
       : "stayed put";
     this.minds.get(memberId)?.noteApplied(what);
   }
@@ -286,6 +287,11 @@ function commitmentViable(c: MazeDecision, view: MazeMemberView): boolean {
   if (c.action === "release") return view.me.holding !== null;
   if (c.action === "scout") return view.canScout;
   if (c.action === "share") return view.iFoundUnshared !== null && view.sharingAllowed;
+  if (c.action === "rescue") {
+    return view.captive !== null && view.key !== null
+      && view.key.carriedBy === null
+      && (view.key.claimedBy === null || view.key.claimedBy === view.me.id);
+  }
   return false; // "wait" is never held
 }
 
@@ -294,8 +300,9 @@ function agentSignature(view: MazeMemberView, mind: MazeMind): string {
     `${c.id}:${c.delivered ? "done" : c.claimedBy ?? "open"}:${c.routeTiles ?? "x"}`).sort().join(",");
   const plates = view.door.plates.map((p) => `${p.id}:${p.heldBy ?? p.claimedBy ?? "free"}`).join(",");
   const knowledge = `crack:${view.crackIKnow ? view.crackIKnow.foundBy : "no"}|unshared:${view.iFoundUnshared ? "yes" : "no"}|scout:${view.canScout ? "yes" : "no"}`;
+  const jail = `jail:${view.captive ? view.captive.name : "none"}|key:${view.key ? view.key.carriedBy ?? view.key.claimedBy ?? "free" : "none"}|jailer:${view.jailer.active ? "on" : "off"}`;
   const me = `me:${view.me.carrying ? "carry" : view.me.holding ?? "free"}`; // position excluded: moving is not a reason to re-decide
-  return [crates, plates, `door:${view.door.open ? "open" : "shut"}`, view.delivered, knowledge, me, view.announcements.join(";"), `mv${mind.memoryVersion}`].join("|");
+  return [crates, plates, `door:${view.door.open ? "open" : "shut"}`, view.delivered, knowledge, jail, me, view.announcements.join(";"), `mv${mind.memoryVersion}`].join("|");
 }
 
 function buildAgentPrompt(view: MazeMemberView, mind: MazeMind): string {
@@ -322,6 +329,8 @@ The ONLY public way between the camp side and the warrens is a stone door at (${
 ${view.crackIKnow ? `\nYou KNOW a hidden crack in the maze wall at (${view.crackIKnow.x},${view.crackIKnow.y}) (${view.crackIKnow.foundBy === "me" ? "you found it yourself" : `${view.crackIKnow.foundBy} shared it with the crew`}). It leads to a sealed cache room with a golden bonus crate. Your routes already use it.` : ""}
 ${view.iFoundUnshared ? `\nYou found this crack YOURSELF and the crew does NOT know. ${view.sharingAllowed ? 'It is your choice: "share" it and everyone can reach the golden cache crate - or keep it to yourself and only you can.' : 'Sharing is OFF for this run. You cannot share the crack; use it privately to reach the golden cache crate, or wait.'}` : ""}
 ${!view.sharingAllowed ? "Sharing is OFF for this run. Do not choose \"share\"; discoveries stay private." : ""}
+The JAILER patrols near the middle of the route${view.jailer.active ? ` (currently at (${Math.round(view.jailer.x)},${Math.round(view.jailer.y)})${view.jailer.chasing ? `, chasing ${view.jailer.chasing}` : ""})` : " - it is gone while someone is jailed"}. It runs at any mii it spots down a straight corridor; whoever it catches is dragged to the jail at (${view.jail.x},${view.jail.y}), it vanishes, and a jail key appears somewhere in the maze. It only ever holds one captive. The crew can still finish the puzzle without freeing anyone.${view.jailerAlert ? " The crew KNOWS about it now: everyone keeps their distance and runs if it comes at them." : ""}
+${view.captive ? `${view.captive.name} is IN JAIL. ${view.key ? view.key.carriedBy ? `The jail key is being carried${view.key.carriedBy === me.id ? " by you" : ""}.` : view.key.claimedBy ? `The jail key at (${Math.round(view.key.x)},${Math.round(view.key.y)}) is being fetched${view.key.claimedBy === me.id ? " by you" : ""}.` : `The jail key is lying at (${Math.round(view.key.x)},${Math.round(view.key.y)}) - "rescue" to fetch it and set ${view.captive.name} free (the jailer returns once they are out).` : "There is no key."}` : ""}
 Your position: (${me.x.toFixed(1)},${me.y.toFixed(1)}). You are ${me.carrying ? "carrying a crate back to camp" : me.holding ? `HOLDING ${me.holding} (keeping the door machinery alive - "release" to step off, or "wait" to keep holding)` : "free"}.
 Other crew: ${view.others.map((o) => `${o.name} (${o.doing})`).join(", ") || "none"}.
 Delivered so far: ${view.delivered}/${view.total}.
@@ -343,6 +352,7 @@ ${!me.holding && !me.carrying && view.door.plates.some((p) => !p.heldBy && (!p.c
 ${me.holding ? `- "release" to step off ${me.holding} (the door will shut if the other plate is not held).` : ""}
 ${view.canScout ? `- "scout" to walk the camp-side walls and look closely for a hidden crack.` : ""}
 ${view.iFoundUnshared && view.sharingAllowed ? `- "share" to tell the crew about the crack you found at (${view.iFoundUnshared.x},${view.iFoundUnshared.y}).` : ""}
+${!me.holding && !me.carrying && view.captive && view.key && !view.key.carriedBy && (!view.key.claimedBy || view.key.claimedBy === me.id) ? `- "rescue" to fetch the jail key at (${Math.round(view.key.x)},${Math.round(view.key.y)}) and free ${view.captive.name}.` : ""}
 - "wait" if nothing makes sense for you right now${me.holding ? " (keep holding)" : ""}.
 Use crate and plate ids exactly as listed (e.g. crate-0, plate-0). reason: one short sentence in your own voice.`;
 }
