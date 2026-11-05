@@ -178,7 +178,7 @@ test("one character's model failure falls back alone; the others stay model-driv
   const statuses = crew.statuses();
   const gus = statuses.find((s) => s.name === "Gus")!;
   assert.equal(gus.state, "fallback");
-  assert.match(gus.detail, /built-in \(connection refused\)/);
+  assert.match(gus.detail, /built-in \(connection refused; the model keeps retrying\)/);
   const others = statuses.filter((s) => s.name !== "Gus");
   assert.ok(others.length >= 2 && others.every((s) => s.state === "active"), "others keep their model drivers");
 });
@@ -525,4 +525,31 @@ test("declines appear on the board and in the feed with names", async () => {
   // the decline events exist and the ask later ended - no consent was manufactured)
   const board = crew.boardView();
   assert.equal(board.helps.length, 0, "nobody is shown helping after everyone declined");
+});
+
+test("a failed mind retries and decides again (no permanent built-in demotion)", async () => {
+  const clock = { t: 10_000 };
+  let hang = true;
+  const caller: JsonCaller & { calls: number } = {
+    provider: "ollama", model: "fake-slow", calls: 0,
+    callJson<T>(prompt: string): Promise<T> {
+      caller.calls++;
+      if (hang && prompt.includes("You are Pip.")) return new Promise<T>(() => {});
+      return Promise.resolve({ action: "wait", piece: "", reason: "back and watching" } as T);
+    },
+  };
+  const p = new BridgePuzzle(CREW, 7);
+  const crew = new MindfulCrew(caller, () => clock.t);
+  p.setController(crew);
+  p.tick(0.05); await flush(); // Pip's call starts (hangs)
+  clock.t += 31_000; // past the 30s timeout
+  p.tick(0.05); await flush();
+  const down = crew.statuses().find((s) => s.name === "Pip")!;
+  assert.equal(down.state, "fallback");
+  assert.match(down.detail, /retrying/);
+  hang = false; // the model answers again
+  clock.t += 61_000; // past the retry backoff
+  p.tick(0.05); await flush(); await flush();
+  const back = crew.statuses().find((s) => s.name === "Pip")!;
+  assert.notEqual(back.state, "fallback", "Pip recovered once the model answered");
 });

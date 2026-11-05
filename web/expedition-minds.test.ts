@@ -178,7 +178,7 @@ test("a model error falls back just that mii to built-in, named per character; r
   const st = minds.statuses();
   const gus = st.find((q) => q.name === "Gus")!;
   assert.equal(gus.state, "fallback");
-  assert.match(gus.detail, /built-in \(connection refused\)/);
+  assert.match(gus.detail, /built-in \(connection refused; the model keeps retrying\)/);
   assert.ok(st.filter((q) => q.state === "fallback").length === 1, "only Gus fell back");
 });
 

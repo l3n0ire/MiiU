@@ -61,6 +61,7 @@ interface SavedSetup {
   model?: string;
   rememberKey?: boolean;
   callBudget?: number; // per-puzzle aggregate model call budget (default 40)
+  timeoutSec?: number; // per-call model answer timeout, seconds (default 30, max 120)
 }
 
 let minds: MindfulCrew | null = null;
@@ -87,7 +88,7 @@ function attachMinds(setup: SavedSetup, key: string | null) {
       openaiApiKey: key ?? undefined,
       model: setup.model || undefined,
     });
-    minds = new MindfulCrew(caller, undefined, undefined, setup.callBudget);
+    minds = new MindfulCrew(caller, undefined, undefined, setup.callBudget, (setup.timeoutSec ?? 30) * 1000);
     puzzle.setController(minds);
   } catch (err) {
     console.error("Could not connect model:", err);
@@ -142,7 +143,7 @@ function renderCrewPanel() {
   driver.textContent = minds.exhausted
     ? `Run failed - model call budget used up (${stats.calls}/${stats.budget})`
     : statuses.length > 0 && fallen === statuses.length
-      ? "Built-in logic - model unavailable for every mii"
+      ? "Built-in logic - model unavailable for every mii (still retrying)"
       : `Each mii decides for itself with ${minds.modelLabel}`;
   const lines = statuses.map((s) => {
     const tag = s.state === "fallback" ? "[built-in]" : s.state === "thinking" ? "[thinking]" : "[model]";
@@ -181,7 +182,8 @@ function showCrewSetup() {
     <p style="margin:0 0 14px;color:#8a8278">A model <b>you</b> connect gives each mii its own decisions:
     which piece to carry, when to ask for a partner on a heavy beam, and whether to answer someone
     else's ask. Nobody is assigned jobs from above. They still walk, lift and place with the same
-    rules - and any mii whose model can't answer falls back to built-in logic, named per character.</p>
+    rules - and a mii whose model can't answer is covered by built-in logic, named per character,
+    while its model retries - it is not stuck on built-in for the rest of the run.</p>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button type="button" id="crewProvOpenAI" style="flex:1">OpenAI key</button>
       <button type="button" id="crewProvOllama" style="flex:1">My own Ollama</button>
@@ -214,7 +216,11 @@ function showCrewSetup() {
     </div>
     <label style="font-size:13px;color:#8a8278">Model call budget per puzzle (shared by the whole crew)</label>
     <input id="crewBudget" type="number" min="1" step="1" style="width:120px;margin:4px 0" />
-    <p style="font-size:12px;color:#8a8278;margin:0 0 10px">When the crew's calls run out, the run stops and the agents report failure - nothing is silently taken over by built-in logic - and you can restart with a different budget. A mii whose own call times out or errors still falls back to built-in logic on its own, named per character.</p>
+    <p style="font-size:12px;color:#8a8278;margin:0 0 10px">When the crew's calls run out, the run stops and the agents report failure - nothing is silently taken over by built-in logic - and you can restart with a different budget.</p>
+    <label style="font-size:13px;color:#8a8278">Model answer timeout (seconds, per call)</label>
+    <input id="crewTimeout" type="number" min="10" max="120" step="5" style="width:90px;margin:4px 0" />
+    <p style="font-size:12px;color:#8a8278;margin:0 0 10px">Give a slower local model more room to answer. A mii whose
+    call runs past this is covered by built-in logic while its model retries.</p>
     <div id="crewSetupError" style="color:#b3261e;font-size:13px;min-height:18px;margin-top:8px"></div>
     <div style="display:flex;gap:8px;margin-top:10px">
       <button type="button" id="crewStart" style="flex:1;background:#ff7a59;border:none;color:#fff;padding:8px;border-radius:8px">Connect</button>
@@ -225,6 +231,7 @@ function showCrewSetup() {
 
   const $c = (id: string) => card.querySelector(id) as HTMLElement & { value?: string; checked?: boolean };
   const readBudgetInput = () => Math.max(1, Math.floor(Number($c("#crewBudget").value) || 40));
+  const readTimeoutInput = () => Math.max(10, Math.min(120, Math.floor(Number($c("#crewTimeout").value) || 30)));
   let provider: "ollama" | "openai" = existing?.provider ?? "openai";
   const paint = () => {
     $c("#crewPaneOpenAI").style.display = provider === "openai" ? "" : "none";
@@ -237,6 +244,7 @@ function showCrewSetup() {
   if (existing?.model) { $c("#crewModel").value = existing.model; $c("#crewOllamaModel").value = existing.model; }
   if (existing?.ollamaUrl) $c("#crewOllamaUrl").value = existing.ollamaUrl;
   $c("#crewBudget").value = String(existing?.callBudget ?? 40);
+  $c("#crewTimeout").value = String(existing?.timeoutSec ?? 30);
   const hasKey = Boolean(storedKey());
   if (hasKey) $c("#crewKey").value = "••••••••••••"; // hint a key is remembered; never echo it
   $c("#crewRemember").checked = Boolean(existing?.rememberKey && hasKey);
@@ -272,13 +280,14 @@ function showCrewSetup() {
       sessionKey = key;
       const remember = Boolean($c("#crewRemember").checked);
       if (remember) localStorage.setItem(KEY_KEY, key); else localStorage.removeItem(KEY_KEY);
-      setup = { provider, model: $c("#crewModel").value?.trim() || undefined, rememberKey: remember, callBudget: readBudgetInput() };
+      setup = { provider, model: $c("#crewModel").value?.trim() || undefined, rememberKey: remember, callBudget: readBudgetInput(), timeoutSec: readTimeoutInput() };
     } else {
       setup = {
         provider,
         ollamaUrl: ($c("#crewOllamaUrl").value ?? "").trim() || "http://localhost:11434",
         model: $c("#crewOllamaModel").value?.trim() || undefined,
         callBudget: readBudgetInput(),
+        timeoutSec: readTimeoutInput(),
       };
     }
     localStorage.setItem(SETUP_KEY, JSON.stringify(setup));

@@ -16,14 +16,17 @@
 //
 // Honesty rules (same bar as the rest of the puzzles):
 // - The panel reports each character's ACTUAL driver: the model while it is
-//   deciding for that character, or built-in logic with the reason when that
-//   character's model timed out or errored (per-character fallback; the run
-//   continues).
+//   deciding for that character, or built-in logic with the reason while that
+//   character's model is timing out or erroring. A failed call is retried
+//   with backoff and the model takes over again when it answers - built-in
+//   is cover, not a demotion (the run continues either way).
 // - The aggregate call budget is DIFFERENT: when it runs out the whole run
 //   FAILS ("the agents failed to accomplish the task") and the page offers a
 //   restart with a different limit. There is no silent built-in completion.
-// - Hard bounds: adjustable aggregate call cap per puzzle, 30s per-call
-//   timeout, per-request output cap (server-enforced) and prompt char cap.
+// - Hard bounds: adjustable aggregate call cap per puzzle, adjustable
+//   per-call timeout (default 30s, max 120s - llm-json aborts any single
+//   fetch there), per-request output cap (server-enforced) and prompt char
+//   cap.
 //   These are call/token bounds, not a dollar cap.
 
 import type { JsonCaller } from "../server/llm-json.ts";
@@ -40,7 +43,10 @@ export interface MindStatus {
   lastReason: string | null;
 }
 
-const THINKING_TIMEOUT_MS = 30_000;
+const DEFAULT_THINKING_TIMEOUT_MS = 30_000;
+const MAX_THINKING_TIMEOUT_MS = 120_000; // llm-json aborts any single fetch at 120s
+const FAIL_RETRY_BASE_MS = 5_000; // first model retry after a failed call; doubles, capped
+const FAIL_RETRY_CAP_MS = 60_000;
 const CALL_COOLDOWN_MS = 1_500;
 const MAX_PROMPT_CHARS = 8000;
 const MAX_OUTPUT_TOKENS = 2000;
@@ -73,6 +79,8 @@ class PassMind {
   private lastCallAt = 0;
   private lastSignature = "";
   private failed: string | null = null;
+  private failStreak = 0;
+  private retryAt = 0;
   private rejectStreak = 0;
   // Bumped on timeout and on newPuzzle: a response that arrives AFTER its
   // call's generation is stale and must not touch any state.
@@ -84,6 +92,7 @@ class PassMind {
     private caller: JsonCaller,
     private spendCall: () => boolean, // false when the puzzle budget is exhausted
     private now: () => number,
+    private timeoutMs: number = DEFAULT_THINKING_TIMEOUT_MS,
   ) {}
 
   freeze() { // the run failed: any in-flight reply is now stale
@@ -96,6 +105,8 @@ class PassMind {
     this.committed = null;
     this.memory = [];
     this.failed = null;
+    this.failStreak = 0;
+    this.retryAt = 0;
     this.lastSignature = "";
     this.lastReason = null;
     this.state = "active";
@@ -114,7 +125,7 @@ class PassMind {
   memoryLines(): string[] { return [...this.memory]; }
 
   detail(): string {
-    if (this.failed) return `built-in (${this.failed})`;
+    if (this.failed) return `built-in (${this.failed}; the model keeps retrying)`;
     if (this.inFlight && !this.committed) return "thinking…";
     if (this.committed) return this.lastReason ?? "decided";
     return "watching";
@@ -131,14 +142,15 @@ class PassMind {
   get unusable(): boolean { return this.failed !== null; }
 
   consider(signature: string, prompt: string, system: string) {
-    if (this.failed) return;
-    if (this.inFlight && this.now() - this.thinkingSince > THINKING_TIMEOUT_MS) {
+    if (this.inFlight && this.now() - this.thinkingSince > this.timeoutMs) {
       this.inFlight = false;
-      this.failed = "no answer after 30s";
+      this.noteFailure(`no answer after ${Math.round(this.timeoutMs / 1000)}s`);
       this.generation++;
       return;
     }
-    if (signature === this.lastSignature || this.inFlight) return;
+    if (this.inFlight) return;
+    if (this.failed && this.now() < this.retryAt) return; // backing off before the retry
+    if (!this.failed && signature === this.lastSignature) return;
     const cooldown = CALL_COOLDOWN_MS * 2 ** Math.min(this.rejectStreak, 4);
     if (this.now() - this.lastCallAt < cooldown) return;
     if (!this.spendCall()) return; // budget out: the crew fails the run (engine checks budgetExhausted)
@@ -155,13 +167,24 @@ class PassMind {
         system, temperature: 0.4, maxOutputTokens: MAX_OUTPUT_TOKENS,
       });
       if (gen !== this.generation) return;
+      this.failed = null; // the model answered again: it takes back over
+      this.failStreak = 0;
+      this.retryAt = 0;
       this.onReply(reply);
     } catch (err) {
       if (gen !== this.generation) return;
-      this.failed = err instanceof Error ? err.message.slice(0, 120) : "request failed";
+      this.noteFailure(err instanceof Error ? err.message.slice(0, 120) : "request failed");
     } finally {
       if (gen === this.generation) this.inFlight = false;
     }
+  }
+
+  // A slow or failed call is a lapse, not a demotion: built-in logic covers
+  // the character (the panel says why) while the model retries with backoff.
+  private noteFailure(reason: string) {
+    this.failed = reason;
+    this.failStreak++;
+    this.retryAt = this.now() + Math.min(FAIL_RETRY_BASE_MS * 2 ** Math.min(this.failStreak - 1, 4), FAIL_RETRY_CAP_MS);
   }
 
   private onReply(reply: MoveReply) {
@@ -197,12 +220,15 @@ export class PassMinds implements ExpeditionController {
 
   constructor(
     private caller: JsonCaller,
-    opts: { now?: () => number; maxCalls?: number } = {},
+    opts: { now?: () => number; maxCalls?: number; thinkingTimeoutMs?: number } = {},
   ) {
     this.maxCalls = opts.maxCalls ?? DEFAULT_MAX_CALLS;
+    this.thinkingTimeoutMs = Math.min(Math.max(opts.thinkingTimeoutMs ?? DEFAULT_THINKING_TIMEOUT_MS, 10_000), MAX_THINKING_TIMEOUT_MS);
     this.now = opts.now ?? (() => Date.now());
     this.modelLabel = `${caller.model} (${caller.provider === "openai" ? "OpenAI" : "Ollama"})`;
   }
+
+  private readonly thinkingTimeoutMs: number;
 
   private now: () => number;
 
@@ -226,20 +252,20 @@ export class PassMinds implements ExpeditionController {
 
   private mindFor(id: string, name: string): PassMind {
     let m = this.minds.get(id);
-    if (!m) { m = new PassMind(id, name, this.caller, this.spendCall, this.now); this.minds.set(id, m); }
+    if (!m) { m = new PassMind(id, name, this.caller, this.spendCall, this.now, this.thinkingTimeoutMs); this.minds.set(id, m); }
     return m;
   }
 
   decide(view: MemberView): ExpeditionDecision | "pending" | "fallback" {
     const mind = this.mindFor(view.me.id, view.me.name);
-    if (mind.unusable) return "fallback";
     if (this.budgetOut) return "pending"; // engine is failing the run
     if (mind.committed && commitmentViable(mind.committed, view)) return mind.committed;
     if (mind.committed && !commitmentViable(mind.committed, view)) mind.committed = null;
     const signature = agentSignature(view, mind);
     const prompt = buildAgentPrompt(view, mind);
     const system = `You are ${view.me.name}, one of a small crew of island miis bringing supplies home across a ridge. You decide for yourself - nobody assigns you jobs. You know only what you have seen or been told. Reply only with JSON matching the schema.`;
-    mind.consider(signature, prompt, system);
+    mind.consider(signature, prompt, system); // retries a failed mind once its backoff expires
+    if (mind.unusable) return "fallback"; // built-in covers this mii until its model answers again
     return "pending";
   }
 
